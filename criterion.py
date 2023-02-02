@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from utils.box_util import generalized_box3d_iou
 from utils.dist import all_reduce_average
 from utils.misc import huber_loss
+from utils.ulip_losses import CLIPLoss
+from models.pointMLP_ULIP.pointmlp import pointMLP_ULIP
+from models.model_3detr import load_text_embed
 from scipy.optimize import linear_sum_assignment
 
 
@@ -87,7 +90,7 @@ class Matcher(nn.Module):
 
 
 class SetCriterion(nn.Module):
-    def __init__(self, matcher, dataset_config, loss_weight_dict):
+    def __init__(self, matcher, dataset_config, loss_weight_dict, text_embed):
         super().__init__()
         self.dataset_config = dataset_config
         self.matcher = matcher
@@ -97,6 +100,8 @@ class SetCriterion(nn.Module):
         semcls_percls_weights[-1] = loss_weight_dict["loss_no_object_weight"]
         del loss_weight_dict["loss_no_object_weight"]
         self.register_buffer("semcls_percls_weights", semcls_percls_weights)
+        
+        self.clip_loss = CLIPLoss(text_embed)
 
         self.loss_functions = {
             "loss_sem_cls": self.loss_sem_cls,
@@ -104,6 +109,7 @@ class SetCriterion(nn.Module):
             "loss_center": self.loss_center,
             "loss_size": self.loss_size,
             "loss_giou": self.loss_giou,
+            "loss_2dalignment": self.loss_2dalignment,
             # this isn't used during training and is logged for debugging.
             # thus, this loss does not have a loss_weight associated with it.
             "loss_cardinality": self.loss_cardinality,
@@ -119,6 +125,20 @@ class SetCriterion(nn.Module):
         pred_objects = (pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1)
         card_err = F.l1_loss(pred_objects.float(), targets["nactual_gt"])
         return {"loss_cardinality": card_err}
+    
+    def loss_2dalignment(self, outputs, targets, assignments):
+        visual_embeds = outputs['visual_embeds']
+        cls_logits = outputs["sem_cls_logits"]
+        ulip_logits = outputs["batch_ulip_logits"]
+        cls_probs = F.softmax(cls_logits, -1)
+        ulip_probs = F.softmax(ulip_logits, -1)
+        cls_preds = torch.argmax(cls_probs, -1) # B, Q
+        B, Q = cls_preds.size()
+        
+        distill_loss = F.kl_div(cls_probs, ulip_probs)
+        contrastive_loss = self.clip_loss(visual_embeds.view(B*Q, -1), cls_preds.view(-1))
+        
+        return {"loss_2dalignment": distill_loss + contrastive_loss}
 
     def loss_sem_cls(self, outputs, targets, assignments):
 
@@ -315,8 +335,15 @@ class SetCriterion(nn.Module):
         else:
             size_loss = torch.zeros(1, device=pred_box_sizes.device).squeeze()
         return {"loss_size": size_loss}
+    
+    def crop_pc(self, pc, center, size):
+        mask1 = np.prod(pc >= center - size / 2, -1)
+        mask2 = np.prod(pc <= center + size / 2, -1)
+        mask = (mask1 * mask2).astype('bool')
+        assert mask.sum() > 0
+        return pc[mask]
 
-    def single_output_forward(self, outputs, targets):
+    def single_output_forward(self, outputs, targets, ulip):
         gious = generalized_box3d_iou(
             outputs["box_corners"],
             targets["gt_box_corners"],
@@ -331,6 +358,25 @@ class SetCriterion(nn.Module):
         )
         outputs["center_dist"] = center_dist
         assignments = self.matcher(outputs, targets)
+        
+        # # Crop point clouds
+        # assert ulip is not None
+        # batch_centers: torch.Tensor = outputs["center_unnormalized"]
+        # batch_sizes: torch.Tensor = outputs["size_unnormalized"]
+        # point_clouds: torch.Tensor = targets["point_clouds"]
+        # # batch, nqueries, _ = centers.size()
+        # # centers = centers.view(batch * nqueries, 3)
+        # # sizes = sizes.view(batch * nqueries, 3)
+        # batch_ulip_logits = []
+        # for centers, sizes in zip(batch_centers, batch_sizes):
+        #     ulip_logits = []
+        #     for cloud, center, size in zip(point_clouds, centers, sizes):
+        #         sub_cloud = self.crop_pc(cloud, center, size).unsqueeze(0).permute(0, 2, 1)
+        #         feats = ulip(sub_cloud).squeeze(0)
+        #         ulip_logits.append(feats)
+        #     ulip_logits = torch.stack(ulip_logits)
+        #     batch_ulip_logits.append(ulip_logits)
+        # outputs["batch_ulip_logits"] = torch.stack(batch_ulip_logits)
 
         losses = {}
 
@@ -352,7 +398,7 @@ class SetCriterion(nn.Module):
                 final_loss += losses[k.replace("_weight", "")]
         return final_loss, losses
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, ulip=None):
         nactual_gt = targets["gt_box_present"].sum(axis=1).long()
         num_boxes = torch.clamp(all_reduce_average(nactual_gt.sum()), min=1).item()
         targets["nactual_gt"] = nactual_gt
@@ -361,12 +407,12 @@ class SetCriterion(nn.Module):
             "num_boxes_replica"
         ] = nactual_gt.sum().item()  # number of boxes on this worker for dist training
 
-        loss, loss_dict = self.single_output_forward(outputs["outputs"], targets)
+        loss, loss_dict = self.single_output_forward(outputs["outputs"], targets, ulip)
 
         if "aux_outputs" in outputs:
             for k in range(len(outputs["aux_outputs"])):
                 interm_loss, interm_loss_dict = self.single_output_forward(
-                    outputs["aux_outputs"][k], targets
+                    outputs["aux_outputs"][k], targets, ulip
                 )
 
                 loss += interm_loss
@@ -391,6 +437,8 @@ def build_criterion(args, dataset_config):
         "loss_angle_reg_weight": args.loss_angle_reg_weight,
         "loss_center_weight": args.loss_center_weight,
         "loss_size_weight": args.loss_size_weight,
+        "loss_2dalignment_weight": args.loss_2dalignment_weight,
     }
-    criterion = SetCriterion(matcher, dataset_config, loss_weight_dict)
+    text_embed = load_text_embed(args)
+    criterion = SetCriterion(matcher, dataset_config, loss_weight_dict, text_embed)
     return criterion

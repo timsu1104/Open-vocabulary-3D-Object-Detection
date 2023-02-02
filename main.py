@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 # 3DETR codebase specific imports
 from datasets import build_dataset
 from engine import evaluate, train_one_epoch
-from models import build_model
+from models import build_model, build_ULIP
 from optimizer import build_optimizer
 from criterion import build_criterion
 from utils.dist import init_distributed, is_distributed, is_primary, get_rank, barrier
@@ -101,6 +101,7 @@ def make_args_parser():
     parser.add_argument("--loss_angle_reg_weight", default=0.5, type=float)
     parser.add_argument("--loss_center_weight", default=5.0, type=float)
     parser.add_argument("--loss_size_weight", default=1.0, type=float)
+    parser.add_argument("--loss_2dalignment_weight", default=0., type=float)
 
     ##### Dataset #####
     parser.add_argument(
@@ -122,6 +123,39 @@ def make_args_parser():
     )
     parser.add_argument("--dataset_num_workers", default=4, type=int)
     parser.add_argument("--batchsize_per_gpu", default=8, type=int)
+    
+    # pseudo label
+    parser.add_argument(
+        "--pseudo_label_dir",
+        type=str,
+        default=None,
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument(
+        "--clip_embed_path",
+        type=str,
+        default="/home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_3detr.pth",
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument(
+        "--ulip_ckpt_path",
+        type=str,
+        default="/home/zhengyuan/code/ULIP/pretraining_ScanObjectNN/checkpoints/pointMLP_ULIP-20230131063533/best_checkpoint.pth",
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument(
+        "--feature_2d_dir",
+        type=str,
+        default=None,
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument("--use_pbox", default=False, action="store_true")
+    parser.add_argument("--use_2d_feature", default=False, action="store_true")
+    parser.add_argument("--use_image", default=False, action="store_true")
 
     ##### Training #####
     parser.add_argument("--start_epoch", default=-1, type=int)
@@ -355,7 +389,9 @@ def main(local_rank, args):
 
     datasets, dataset_config = build_dataset(args)
     model, _ = build_model(args, dataset_config)
+    ulip = build_ULIP(args, dataset_config)
     model = model.cuda(local_rank)
+    ulip = ulip.cuda(local_rank)
     model_no_ddp = model
 
     if is_distributed():
