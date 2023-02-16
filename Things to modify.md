@@ -1,35 +1,48 @@
-### Dataset
-
-Specify the path in ```datasets/scannet.py```. Then images, depths, and poses can be returned. 
-
-### Visualization
-
-Wandb and some visualization scripts. 
-
-### OpenSeg / LSeg
-
-OpenSeg is not currently available and we will using LSeg first. The weight is released [here](https://github.com/isl-org/lang-seg).
-
-### RegionCLIP
-
-RegionCLIP-zeroshot is a package that can be installed. It also provides zero-shot inference pipeline. So transfering seems not to be tough. 
-
 ### Proposed method
 
-Given paired images w.r.t. a scene, RegionCLIP provides pseudo 2D boxes while LSeg provides pixel-wise CLIP-like visual features. Using camera parameters, they can then be projected to 3D point clouds (e.g. 3D bboxes through GSS) and 3D feature clouds (similar to 3DVG-Transformer). The feature cloud can provide labels for each class. Finally, the supervision is 2-fold
-- localization loss using pseudo boxes as gt annotations. 
-- CLIP-like feature alignment loss for each box. 
-
-### Ways to modify
-
-The best way is to construct an end-to-end pipeline. It is simpler to use if implemented. But the training speed may suffer from the projection speed. 
-
-An alternative way is to construct a dataset, which is almost the same as ScanNetV2 except that the training labels and boxes are replaced with projected LSeg's sem feature and RegionCLIP's boxes. It is much more **tractable** at each single step and the speed will remains the same as the original 3DETR. 
-
-I suggest we start with the second and integrate later if the inference is fast. 
 
 ### Work to do
 
-1. LSeg preprocessing (data_preprocessing/pseudo_label_util.py)
-2. RegionCLIP+GSS preprocessing (data_preprocessing/pseudo_box_util.py)
-3. Loss modification. 
+1. Baseline speed (Current: 10d), loss weighting, deadlock when using multiple GPU
+2. LSeg label on SUN RGB-D
+
+Need help: 
+1. baseline speedup
+
+### Current data available
+
+1. Unsupervised GSS data: `/share/suzhengyuan/code/WyPR/gss/computed_proposal_sunrgbd/SZ+V-V+F`
+2. RegionCLIP 2D boxes: `/share/suzhengyuan/data/RegionCLIP_boxes_sunrgbd/2D`
+3. LSeg labels:`/data1/lseg_data/data/sunrgbd/pseudo_labels`
+
+
+
+### Experiments
+
+Open-set Baseline
+
+```bash
+CUDA_VISIBLE_DEVICES=7 python main.py \
+--dataset_name sunrgbd \
+--max_epoch 200 \
+--nqueries 128 \
+--base_lr 2e-5 \
+--matcher_giou_cost 3 \
+--matcher_cls_cost 1 \
+--matcher_center_cost 5 \
+--matcher_objectness_cost 5 \
+--use_image \
+--loss_giou_weight 0 \
+--loss_no_object_weight 0.1 \
+--loss_2dalignment_weight 2e-4 \
+--save_separate_checkpoint_every_epoch -1 \
+--checkpoint_dir exp/sunrgbd/openset_baseline \
+MODEL.WEIGHTS /home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth \
+MODEL.CLIP.TEXT_EMB_PATH /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_sunrgbd.pth \
+MODEL.CLIP.OFFLINE_RPN_CONFIG /home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml \
+MODEL.CLIP.TEXT_EMB_DIM 640 \
+MODEL.RESNETS.DEPTH 200 \
+MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
+MODEL.CLIP.CROP_REGION_TYPE GT \
+MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction
+```

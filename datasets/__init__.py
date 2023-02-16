@@ -18,15 +18,32 @@ def build_dataset(args):
             dataset_config, 
             split_set="train", 
             root_dir=args.dataset_root_dir, 
+            pseudo_box_dir=args.pseudo_label_dir, 
+            feature_2d_dir=args.feature_2d_dir, 
             meta_data_dir=args.meta_data_dir, 
             use_color=args.use_color,
-            augment=True
+            use_image=args.use_image,
+            augment=True,
+            use_pbox=args.use_pbox,
+            use_2d_feature=args.use_2d_feature
         ),
         "test": dataset_builder(
             dataset_config, 
             split_set="val", 
             root_dir=args.dataset_root_dir, 
             use_color=args.use_color,
+            use_image=args.use_image,
+            augment=False
+        ),
+        "inference": dataset_builder(
+            dataset_config, 
+            split_set="train", 
+            root_dir=args.dataset_root_dir, 
+            pseudo_box_dir=args.pseudo_label_dir, 
+            feature_2d_dir=args.feature_2d_dir, 
+            meta_data_dir=args.meta_data_dir, 
+            use_color=args.use_color,
+            use_image=args.use_image,
             augment=False
         ),
     }

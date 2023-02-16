@@ -25,14 +25,18 @@ IGNORE_LABEL = -100
 MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
 DATASET_ROOT_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/scannet_train_detection_data"  ## Replace with path to dataset
 DATASET_METADATA_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/meta_data" ## Replace with path to dataset
-SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_square" # TODO change this
+SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_square"
 SCANNET_FRAMES = os.path.join(SCANNET_FRAMES_ROOT, "{}/{}") # scene_id, mode
 SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAMES, "{}") # name of the file
+FEATURE_2D_PATH = '/data/suzhengyuan/ScanRefer/LSeg_data'
+PSEUDO_BOX_PATH = "" # "/share/suzhengyuan/data/RegionCLIP_boxes/3DETR_adjusted/3D_GSS_GT_multi_softnms"
+MAX_NUM_PSEUDO_BOX = 64
 
 
 class ScannetDatasetConfig(object):
     def __init__(self):
         self.num_semcls = 18
+        self.clip_embed_length = 640
         self.num_angle_bin = 1
         self.max_num_obj = 64
 
@@ -50,7 +54,7 @@ class ScannetDatasetConfig(object):
             "desk": 10,
             "curtain": 11,
             "refrigerator": 12,
-            "showercurtrain": 13,
+            "shower curtain": 13,
             "toilet": 14,
             "sink": 15,
             "bathtub": 16,
@@ -82,7 +86,7 @@ class ScannetDatasetConfig(object):
             "desk": 12,
             "curtain": 13,
             "refrigerator": 14,
-            "showercurtrain": 15,
+            "shower curtain": 15,
             "toilet": 16,
             "sink": 17,
             "bathtub": 18,
@@ -172,6 +176,8 @@ class ScannetDetectionDataset(Dataset):
         split_set="train",
         root_dir=None,
         meta_data_dir=None,
+        pseudo_box_dir=None,
+        feature_2d_dir=None,
         num_points=40000,
         use_color=False,
         use_image=False,
@@ -179,6 +185,8 @@ class ScannetDetectionDataset(Dataset):
         augment=False,
         use_random_cuboid=True,
         random_cuboid_min_points=30000,
+        use_pbox=False,
+        use_2d_feature=False
     ):
 
         self.dataset_config = dataset_config
@@ -188,8 +196,16 @@ class ScannetDetectionDataset(Dataset):
 
         if meta_data_dir is None:
             meta_data_dir = DATASET_METADATA_DIR
+            
+        if pseudo_box_dir is None:
+            pseudo_box_dir = PSEUDO_BOX_PATH
+            
+        if feature_2d_dir is None:
+            feature_2d_dir = FEATURE_2D_PATH
 
         self.data_path = root_dir
+        self.pseudo_box_dir = pseudo_box_dir
+        self.feature_2d_dir = feature_2d_dir
         all_scan_names = list(
             set(
                 [
@@ -219,6 +235,8 @@ class ScannetDetectionDataset(Dataset):
         self.use_image = use_image
         self.use_height = use_height
         self.augment = augment
+        self.use_pbox = use_pbox
+        self.use_2d_feature = use_2d_feature
         self.use_random_cuboid = use_random_cuboid
         self.random_cuboid_augmentor = RandomCuboid(min_points=random_cuboid_min_points)
         self.center_normalizing_range = [
@@ -228,6 +246,9 @@ class ScannetDetectionDataset(Dataset):
         
         if self.use_image:
             self.img_processor = image_processor()
+            
+        if use_pbox:
+            self.dataset_config.max_num_obj = MAX_NUM_PSEUDO_BOX
 
     def __len__(self):
         return len(self.scan_names)
@@ -235,10 +256,18 @@ class ScannetDetectionDataset(Dataset):
     def __getitem__(self, idx):
         scan_name = self.scan_names[idx]
         mesh_vertices = np.load(os.path.join(self.data_path, scan_name) + "_vert.npy")
-        semantic_labels = np.load(
-            os.path.join(self.data_path, scan_name) + "_sem_label.npy"
-        )
-        instance_bboxes = np.load(os.path.join(self.data_path, scan_name) + "_bbox.npy")
+        if self.use_2d_feature:
+            pre_subsample_inds = np.load(os.path.join(self.data_path, scan_name) + "_inds.npy")
+        # semantic_labels = np.load(
+        #     os.path.join(self.data_path, scan_name) + "_sem_label.npy"
+        # )
+        if self.use_pbox:
+            instance_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")
+        else: # Use gt box annotations
+            instance_bboxes = np.load(os.path.join(self.data_path, scan_name) + "_bbox.npy")
+        
+        if self.use_2d_feature:
+            feature_2d = np.load(os.path.join(self.feature_2d_dir, scan_name) + ".npy")
         
         # TODO: acquire semantic labels using LSeg / OpenSeg + projection
         
@@ -277,29 +306,31 @@ class ScannetDetectionDataset(Dataset):
         raw_sizes = np.zeros((MAX_NUM_OBJ, 3), dtype=np.float32)
         raw_angles = np.zeros((MAX_NUM_OBJ,), dtype=np.float32)
 
-        if self.augment and self.use_random_cuboid:
-            (
-                point_cloud,
-                instance_bboxes,
-                per_point_labels,
-            ) = self.random_cuboid_augmentor(
-                point_cloud, instance_bboxes, [semantic_labels]
-            )
-            semantic_labels = per_point_labels[0]
+        # if self.augment and self.use_random_cuboid:
+        #     (
+        #         point_cloud,
+        #         instance_bboxes,
+        #         per_point_labels,
+        #     ) = self.random_cuboid_augmentor(
+        #         point_cloud, instance_bboxes, [semantic_labels]
+        #     )
+        #     semantic_labels = per_point_labels[0]
 
         point_cloud, choices = pc_util.random_sampling(
             point_cloud, self.num_points, return_choices=True
         )
-        semantic_labels = semantic_labels[choices]
+        # semantic_labels = semantic_labels[choices]
 
-        sem_seg_labels = np.ones_like(semantic_labels) * IGNORE_LABEL
+        # sem_seg_labels = np.ones_like(semantic_labels) * IGNORE_LABEL
 
-        for _c in self.dataset_config.nyu40ids_semseg:
-            sem_seg_labels[
-                semantic_labels == _c
-            ] = self.dataset_config.nyu40id2class_semseg[_c]
+        # for _c in self.dataset_config.nyu40ids_semseg:
+        #     sem_seg_labels[
+        #         semantic_labels == _c
+        #     ] = self.dataset_config.nyu40id2class_semseg[_c]
 
         pcl_color = pcl_color[choices]
+        if self.use_2d_feature:
+            feature_2d = feature_2d[pre_subsample_inds][choices]
 
         target_bboxes_mask[0 : instance_bboxes.shape[0]] = 1
         target_bboxes[0 : instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
@@ -376,6 +407,8 @@ class ScannetDetectionDataset(Dataset):
         ret_dict["gt_box_present"] = target_bboxes_mask.astype(np.float32)
         ret_dict["scan_idx"] = np.array(idx).astype(np.int64)
         ret_dict["pcl_color"] = pcl_color
+        if self.use_2d_feature:
+            ret_dict["feature_2d"] = feature_2d
         ret_dict["gt_box_sizes"] = raw_sizes.astype(np.float32)
         ret_dict["gt_box_sizes_normalized"] = box_sizes_normalized.astype(np.float32)
         ret_dict["gt_box_angles"] = raw_angles.astype(np.float32)

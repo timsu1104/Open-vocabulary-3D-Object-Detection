@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch.multiprocessing import set_start_method
 from torch.utils.data import DataLoader, DistributedSampler
+from torch_ema import ExponentialMovingAverage
 
 # 3DETR codebase specific imports
 from datasets import build_dataset
@@ -101,6 +102,7 @@ def make_args_parser():
     parser.add_argument("--loss_angle_reg_weight", default=0.5, type=float)
     parser.add_argument("--loss_center_weight", default=5.0, type=float)
     parser.add_argument("--loss_size_weight", default=1.0, type=float)
+    parser.add_argument("--loss_2dalignment_weight", default=0., type=float)
 
     ##### Dataset #####
     parser.add_argument(
@@ -122,6 +124,56 @@ def make_args_parser():
     )
     parser.add_argument("--dataset_num_workers", default=4, type=int)
     parser.add_argument("--batchsize_per_gpu", default=8, type=int)
+    
+    # pseudo label
+    parser.add_argument(
+        "--pseudo_label_dir",
+        type=str,
+        default=None,
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument(
+        "--clip_embed_path",
+        type=str,
+        default="/home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_sunrgbd_3detr.pth",
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    
+    # Regionclip
+    parser.add_argument(
+        "--region_clip_ckpt_path",
+        type=str,
+        default="/home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth",
+        help="The regionclip checkpoints files.",
+    )
+    parser.add_argument(
+        "--region_clip_config_file",
+        type=str,
+        default="/home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/CLIP_fast_rcnn_R_50_C4_custom_img.yaml",
+        help="The regionclip configuration files.",
+    )
+    parser.add_argument(
+        "opts",
+        help="Modify config options by adding 'KEY VALUE' pairs at the end of the command. "
+        "See config references at "
+        "https://detectron2.readthedocs.io/modules/config.html#config-references",
+        default=None,
+        nargs=argparse.REMAINDER,
+    )
+    
+    parser.add_argument(
+        "--feature_2d_dir",
+        type=str,
+        default=None,
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument("--use_pbox", default=False, action="store_true")
+    parser.add_argument("--use_2d_feature", default=False, action="store_true")
+    parser.add_argument("--use_image", default=False, action="store_true")
+    parser.add_argument("--use_pseudo_labels", default=False, action="store_true")
 
     ##### Training #####
     parser.add_argument("--start_epoch", default=-1, type=int)
@@ -149,6 +201,8 @@ def make_args_parser():
 def do_train(
     args,
     model,
+    regionclip,
+    ema,
     model_no_ddp,
     optimizer,
     criterion,
@@ -179,13 +233,17 @@ def do_train(
     logger = Logger(args.checkpoint_dir)
 
     for epoch in range(args.start_epoch, args.max_epoch):
+        print("Epoch {} starts!".format(epoch))
         if is_distributed():
             dataloaders["train_sampler"].set_epoch(epoch)
 
+        print("Training starts!")
         aps = train_one_epoch(
             args,
             epoch,
             model,
+            regionclip,
+            ema, 
             optimizer,
             criterion,
             dataset_config,
@@ -193,6 +251,7 @@ def do_train(
             logger,
         )
 
+        print("Checkpoint saving!")
         # latest checkpoint is always stored in checkpoint.pth
         save_checkpoint(
             args.checkpoint_dir,
@@ -204,6 +263,7 @@ def do_train(
             filename="checkpoint.pth",
         )
 
+        print("Metric computing!")
         metrics = aps.compute_metrics()
         metric_str = aps.metrics_to_str(metrics, per_class=False)
         metrics_dict = aps.metrics_to_dict(metrics)
@@ -234,6 +294,7 @@ def do_train(
                 args,
                 epoch,
                 model,
+                regionclip, 
                 criterion,
                 dataset_config,
                 dataloaders["test"],
@@ -267,6 +328,7 @@ def do_train(
                 print(
                     f"Epoch [{epoch}/{args.max_epoch}] saved current best val checkpoint at {filename}; ap25 {ap25}"
                 )
+        print("Epoch {} ends!".format(epoch))
 
     # always evaluate last checkpoint
     epoch = args.max_epoch - 1
@@ -275,6 +337,7 @@ def do_train(
         args,
         epoch,
         model,
+        regionclip, 
         criterion,
         dataset_config,
         dataloaders["test"],
@@ -303,7 +366,7 @@ def do_train(
             pickle.dump(metrics, fh)
 
 
-def test_model(args, model, model_no_ddp, criterion, dataset_config, dataloaders):
+def test_model(args, model, regionclip, model_no_ddp, criterion, dataset_config, dataloaders):
     if args.test_ckpt is None or not os.path.isfile(args.test_ckpt):
         f"Please specify a test checkpoint using --test_ckpt. Found invalid value {args.test_ckpt}"
         sys.exit(1)
@@ -318,6 +381,7 @@ def test_model(args, model, model_no_ddp, criterion, dataset_config, dataloaders
         args,
         epoch,
         model,
+        regionclip,
         criterion,
         dataset_config,
         dataloaders["test"],
@@ -355,7 +419,9 @@ def main(local_rank, args):
 
     datasets, dataset_config = build_dataset(args)
     model, _ = build_model(args, dataset_config)
+    regionclip, _ = build_model(args, dataset_config, model_name="regionclip")
     model = model.cuda(local_rank)
+    regionclip = regionclip.cuda(local_rank)
     model_no_ddp = model
 
     if is_distributed():
@@ -394,7 +460,7 @@ def main(local_rank, args):
 
     if args.test_only:
         criterion = None  # faster evaluation
-        test_model(args, model, model_no_ddp, criterion, dataset_config, dataloaders)
+        test_model(args, model, regionclip, model_no_ddp, criterion, dataset_config, dataloaders)
     else:
         assert (
             args.checkpoint_dir is not None
@@ -402,6 +468,7 @@ def main(local_rank, args):
         if is_primary() and not os.path.isdir(args.checkpoint_dir):
             os.makedirs(args.checkpoint_dir, exist_ok=True)
         optimizer = build_optimizer(args, model_no_ddp)
+        ema = ExponentialMovingAverage(model.parameters(), decay=0.995)
         loaded_epoch, best_val_metrics = resume_if_possible(
             args.checkpoint_dir, model_no_ddp, optimizer
         )
@@ -409,6 +476,8 @@ def main(local_rank, args):
         do_train(
             args,
             model,
+            regionclip,
+            ema,
             model_no_ddp,
             optimizer,
             criterion,
