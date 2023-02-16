@@ -4,13 +4,16 @@ import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
 from utils.box_util import generalized_box3d_iou
+from utils.image_util import SUNRGBD_Calibration_cuda, project_box_3d_cuda
 from utils.dist import all_reduce_average
 from utils.misc import huber_loss
 from utils.ulip_losses import CLIPLoss
-from models.pointMLP_ULIP.pointmlp import pointMLP_ULIP
 from models.model_3detr import load_text_embed
 from scipy.optimize import linear_sum_assignment
 
+from time import time
+
+from detectron2.structures import Boxes, Instances
 
 class Matcher(nn.Module):
     def __init__(self, cost_class, cost_objectness, cost_giou, cost_center):
@@ -128,17 +131,14 @@ class SetCriterion(nn.Module):
     
     def loss_2dalignment(self, outputs, targets, assignments):
         visual_embeds = outputs['visual_embeds']
-        cls_logits = outputs["sem_cls_logits"]
-        ulip_logits = outputs["batch_ulip_logits"]
-        cls_probs = F.softmax(cls_logits, -1)
-        ulip_probs = F.softmax(ulip_logits, -1)
-        cls_preds = torch.argmax(cls_probs, -1) # B, Q
-        B, Q = cls_preds.size()
+        clip_logits = outputs["batch_clip_logits"] # B*Q, C
+        B, Q, C = visual_embeds.size()
+        assert clip_logits.size() == (B * Q, C)
         
-        distill_loss = F.kl_div(cls_probs, ulip_probs)
-        contrastive_loss = self.clip_loss(visual_embeds.view(B*Q, -1), cls_preds.view(-1))
+        distill_loss = (1 - F.cosine_similarity(visual_embeds, clip_logits.view(B, Q, C), dim=-1)).sum()
         
-        return {"loss_2dalignment": distill_loss + contrastive_loss}
+        return {"loss_2dalignment": distill_loss}
+        # return {"loss_2dalignment": 0}
 
     def loss_sem_cls(self, outputs, targets, assignments):
 
@@ -343,7 +343,8 @@ class SetCriterion(nn.Module):
         assert mask.sum() > 0
         return pc[mask]
 
-    def single_output_forward(self, outputs, targets, ulip):
+    def single_output_forward(self, outputs, targets, clip):
+        start = time()
         gious = generalized_box3d_iou(
             outputs["box_corners"],
             targets["gt_box_corners"],
@@ -359,24 +360,44 @@ class SetCriterion(nn.Module):
         outputs["center_dist"] = center_dist
         assignments = self.matcher(outputs, targets)
         
-        # # Crop point clouds
-        # assert ulip is not None
-        # batch_centers: torch.Tensor = outputs["center_unnormalized"]
-        # batch_sizes: torch.Tensor = outputs["size_unnormalized"]
-        # point_clouds: torch.Tensor = targets["point_clouds"]
-        # # batch, nqueries, _ = centers.size()
-        # # centers = centers.view(batch * nqueries, 3)
-        # # sizes = sizes.view(batch * nqueries, 3)
-        # batch_ulip_logits = []
-        # for centers, sizes in zip(batch_centers, batch_sizes):
-        #     ulip_logits = []
-        #     for cloud, center, size in zip(point_clouds, centers, sizes):
-        #         sub_cloud = self.crop_pc(cloud, center, size).unsqueeze(0).permute(0, 2, 1)
-        #         feats = ulip(sub_cloud).squeeze(0)
-        #         ulip_logits.append(feats)
-        #     ulip_logits = torch.stack(ulip_logits)
-        #     batch_ulip_logits.append(ulip_logits)
-        # outputs["batch_ulip_logits"] = torch.stack(batch_ulip_logits)
+        # Crop images
+        # print("before clip time", time() - start)
+        start = time()
+        assert clip is not None
+        batch_centers: torch.Tensor = outputs["center_unnormalized"]
+        batch_sizes: torch.Tensor = outputs["size_unnormalized"]
+        batch_angles: torch.Tensor = outputs["angle_continuous"]
+        
+        images_1d, h, w = targets["image"], targets["image_height"], targets["image_width"]
+        images = [
+            image_1d[:height*width*3].view(height, width, 3) 
+                for image_1d, height, width in zip(images_1d, h, w)
+                ]
+        
+        calib_Rtilts: torch.Tensor = targets["calib_Rtilt"]
+        calib_Ks: torch.Tensor = targets["calib_K"]
+        with torch.no_grad():
+            batch_clip_logits = []
+            for image, calib_Rtilt, calib_K, centers, sizes, angles in \
+                zip(images, calib_Rtilts, calib_Ks, batch_centers, batch_sizes, batch_angles):
+                calib = SUNRGBD_Calibration_cuda(calib_Rtilt, calib_K)
+                # boxes = torch.vstack([project_box_3d_cuda(calib, center, size, angle) for center, size, angle in zip(centers, sizes, angles)]) # N, 4
+                boxes = project_box_3d_cuda(calib, centers, sizes, angles)
+                
+                # clip to image region
+                h, w, _ = image.size()
+                max_coords = torch.broadcast_to(torch.tensor([[w, h, w, h]], device=image.device), boxes.size())
+                boxes = torch.clamp_min(boxes, 0)
+                boxes = torch.minimum(boxes, max_coords)
+                
+                batch_clip_logits.append({
+                    'image': image.permute(2, 0, 1).contiguous(),
+                    'instances': Instances((image.shape[0], image.shape[1]), gt_boxes=Boxes(boxes))
+                })
+            batch_clip_logits = clip.inference(batch_clip_logits, do_postprocess=False)
+            outputs["batch_clip_logits"] = batch_clip_logits
+        # print("clip time", time() - start)
+        start = time()
 
         losses = {}
 
@@ -396,9 +417,10 @@ class SetCriterion(nn.Module):
             if self.loss_weight_dict[k] > 0:
                 losses[k.replace("_weight", "")] *= self.loss_weight_dict[k]
                 final_loss += losses[k.replace("_weight", "")]
+        # print("after clip time", time() - start)
         return final_loss, losses
 
-    def forward(self, outputs, targets, ulip=None):
+    def forward(self, outputs, targets, clip=None):
         nactual_gt = targets["gt_box_present"].sum(axis=1).long()
         num_boxes = torch.clamp(all_reduce_average(nactual_gt.sum()), min=1).item()
         targets["nactual_gt"] = nactual_gt
@@ -406,13 +428,13 @@ class SetCriterion(nn.Module):
         targets[
             "num_boxes_replica"
         ] = nactual_gt.sum().item()  # number of boxes on this worker for dist training
-
-        loss, loss_dict = self.single_output_forward(outputs["outputs"], targets, ulip)
+        
+        loss, loss_dict = self.single_output_forward(outputs["outputs"], targets, clip)
 
         if "aux_outputs" in outputs:
             for k in range(len(outputs["aux_outputs"])):
                 interm_loss, interm_loss_dict = self.single_output_forward(
-                    outputs["aux_outputs"][k], targets, ulip
+                    outputs["aux_outputs"][k], targets, clip
                 )
 
                 loss += interm_loss

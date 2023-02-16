@@ -102,6 +102,7 @@ class Model3DETR(nn.Module):
         super().__init__()
         self.pre_encoder = pre_encoder
         self.encoder = encoder
+        self.class_num = dataset_config.num_semcls + 1
         if hasattr(self.encoder, "masking_radius"):
             hidden_dims = [encoder_dim]
         else:
@@ -147,10 +148,11 @@ class Model3DETR(nn.Module):
 
         # Semantic class of the box
         # add 1 for background/not-an-object class
-        # visual_embed_head = mlp_func(output_dim=dataset_config.clip_embed_length)
-        # semcls_head = nn.Linear(640, self.class_num, bias=False)
-        # semcls_head.weight = nn.Parameter(text_embedding, requires_grad=False)
-        semcls_head = mlp_func(output_dim=dataset_config.num_semcls + 1)
+        visual_embed_head = mlp_func(output_dim=dataset_config.clip_embed_length)
+        semcls_head = nn.Linear(640, self.class_num, bias=False)
+        assert semcls_head.weight.size() == text_embedding.size(), f"{semcls_head.weight.size()} {text_embedding.size()}"
+        semcls_head.weight = nn.Parameter(text_embedding, requires_grad=False)
+        # semcls_head = mlp_func(output_dim=dataset_config.num_semcls + 1)
 
         # geometry of the box
         center_head = mlp_func(output_dim=3)
@@ -159,7 +161,7 @@ class Model3DETR(nn.Module):
         angle_reg_head = mlp_func(output_dim=dataset_config.num_angle_bin)
 
         mlp_heads = [
-            # ("visual_embed_head", visual_embed_head),
+            ("visual_embed_head", visual_embed_head),
             ("sem_cls_head", semcls_head),
             ("center_head", center_head),
             ("size_head", size_head),
@@ -232,9 +234,9 @@ class Model3DETR(nn.Module):
         box_features = box_features.reshape(num_layers * batch, channel, num_queries)
 
         # mlp head outputs are (num_layers x batch) x noutput x nqueries, so transpose last two dims
-        # visual_embeds = self.mlp_heads["visual_embed_head"](box_features).transpose(1, 2)
-        # cls_logits = self.mlp_heads["sem_cls_head"](visual_embeds).transpose(1, 2)
-        cls_logits = self.mlp_heads["sem_cls_head"](box_features).transpose(1, 2)
+        visual_embeds = self.mlp_heads["visual_embed_head"](box_features).transpose(1, 2)
+        cls_logits = self.mlp_heads["sem_cls_head"](visual_embeds).transpose(1, 2)
+        # cls_logits = self.mlp_heads["sem_cls_head"](box_features).transpose(1, 2)
         center_offset = (
             self.mlp_heads["center_head"](box_features).sigmoid().transpose(1, 2) - 0.5
         )
@@ -247,7 +249,7 @@ class Model3DETR(nn.Module):
         ).transpose(1, 2)
 
         # reshape outputs to num_layers x batch x nqueries x noutput
-        # visual_embeds = visual_embeds.reshape(num_layers, batch, num_queries, -1)
+        visual_embeds = visual_embeds.reshape(num_layers, batch, num_queries, -1)
         cls_logits = cls_logits.reshape(num_layers, batch, num_queries, -1)
         center_offset = center_offset.reshape(num_layers, batch, num_queries, -1)
         size_normalized = size_normalized.reshape(num_layers, batch, num_queries, -1)
@@ -287,7 +289,7 @@ class Model3DETR(nn.Module):
                 ) = self.box_processor.compute_objectness_and_cls_prob(cls_logits[l])
 
             box_prediction = {
-                # "visual_embeds": visual_embeds[l],
+                "visual_embeds": visual_embeds[l],
                 "sem_cls_logits": cls_logits[l],
                 "center_normalized": center_normalized.contiguous(),
                 "center_unnormalized": center_unnormalized,

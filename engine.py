@@ -4,10 +4,11 @@ import datetime
 import logging
 import math
 import time
-import sys
+import sys, os
 
 from torch.distributed.distributed_c10d import reduce
 from utils.ap_calculator import APCalculator
+from utils.label_formatter import LabelFormatter
 from utils.misc import SmoothedValue
 from utils.dist import (
     all_gather_dict,
@@ -47,6 +48,8 @@ def train_one_epoch(
     args,
     curr_epoch,
     model,
+    regionclip, 
+    ema, 
     optimizer,
     criterion,
     dataset_config,
@@ -84,10 +87,19 @@ def train_one_epoch(
             "point_cloud_dims_min": batch_data_label["point_cloud_dims_min"],
             "point_cloud_dims_max": batch_data_label["point_cloud_dims_max"],
         }
+        s1 = time.time()
         outputs = model(inputs)
+        t1 = time.time()
+        # print("Model Inference time ", t1-s1)
+        if args.use_pseudo_labels: 
+            with ema.average_parameters():
+                teacher_outputs = model(inputs)
 
         # Compute loss
-        loss, loss_dict = criterion(outputs, batch_data_label)
+        s1 = time.time()
+        loss, loss_dict = criterion(outputs, batch_data_label, clip=regionclip)
+        t1 = time.time()
+        # print("Loss computation time ", t1-s1)
 
         loss_reduced = all_reduce_average(loss)
         loss_dict_reduced = reduce_dict(loss_dict)
@@ -112,6 +124,8 @@ def train_one_epoch(
 
         time_delta.update(time.time() - curr_time)
         loss_avg.update(loss_reduced.item())
+        
+        # print("Elapsed", time_delta.avg, "{}/{}".format(batch_idx, len(dataset_loader)))
 
         # logging
         if is_primary() and curr_iter % args.log_every == 0:
@@ -141,6 +155,7 @@ def evaluate(
     args,
     curr_epoch,
     model,
+    clip,
     criterion,
     dataset_config,
     dataset_loader,
@@ -181,7 +196,7 @@ def evaluate(
         # Compute loss
         loss_str = ""
         if criterion is not None:
-            loss, loss_dict = criterion(outputs, batch_data_label)
+            loss, loss_dict = criterion(outputs, batch_data_label, clip)
 
             loss_reduced = all_reduce_average(loss)
             loss_dict_reduced = reduce_dict(loss_dict)
@@ -214,3 +229,74 @@ def evaluate(
         logger.log_scalars(test_dict, curr_train_iter, prefix="Test/")
 
     return ap_calculator
+
+
+@torch.no_grad()
+def inference(
+    args,
+    curr_epoch,
+    model,
+    dataset_config,
+    dataset, 
+    dataset_loader,
+    logger,
+    curr_train_iter,
+):
+    
+    # ap calculator is exact for evaluation. This is slower than the ap calculator used during training.
+    ap_calculator = APCalculator(
+        dataset_config=dataset_config,
+        ap_iou_thresh=[0.25],
+        class2type_map=dataset_config.class2type,
+        exact_eval=True,
+    )
+    
+    label_formatter = LabelFormatter(args.in_dir, args.out_dir, args.feature_2d_dir, dataset.scan_names)
+    
+    assert args.out_dir is not None, f"Please specify a path to save pseudo labels using --out_dir."
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    curr_iter = 0
+    net_device = next(model.parameters()).device
+    num_batches = len(dataset_loader)
+
+    time_delta = SmoothedValue(window_size=10)
+    model.eval()
+    barrier()
+
+    for batch_idx, batch_data_label in enumerate(dataset_loader):
+        curr_time = time.time()
+        for key in batch_data_label:
+            batch_data_label[key] = batch_data_label[key].to(net_device)
+
+        inputs = {
+            "point_clouds": batch_data_label["point_clouds"],
+            "point_cloud_dims_min": batch_data_label["point_cloud_dims_min"],
+            "point_cloud_dims_max": batch_data_label["point_cloud_dims_max"],
+        }
+        outputs = model(inputs)
+
+
+        # Memory intensive as it gathers point cloud GT tensor across all ranks
+        outputs["outputs"] = all_gather_dict(outputs["outputs"])
+        batch_data_label = all_gather_dict(batch_data_label)
+        
+        label_formatter.step(outputs["outputs"], batch_data_label)
+        # ap_calculator.step_meter(outputs, batch_data_label)
+        
+        time_delta.update(time.time() - curr_time)
+        if is_primary() and curr_iter % args.log_every == 0:
+            mem_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+            print(
+                f"Infer; Batch [{curr_iter}/{num_batches}]; Iter time {time_delta.avg:0.2f}; Mem {mem_mb:0.2f}MB"
+            )
+
+            test_dict = {}
+            test_dict["memory"] = mem_mb
+            test_dict["batch_time"] = time_delta.avg
+        curr_iter += 1
+        barrier()
+    if is_primary():
+        logger.log_scalars(test_dict, curr_train_iter, prefix="Test/")
+
+    return label_formatter, ap_calculator

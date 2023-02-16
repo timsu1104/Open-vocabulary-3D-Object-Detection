@@ -38,7 +38,8 @@ from utils.box_util import (
 
 
 MEAN_COLOR_RGB = np.array([0.5, 0.5, 0.5])  # sunrgbd color is in 0~1
-DATA_PATH_V1 = "" ## Replace with path to dataset
+DATA_PATH_V1 = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/sunrgbd/sunrgbd_pc_bbox_50k_v1" ## Replace with path to dataset
+RAW_DATA_PATH = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/sunrgbd/sunrgbd_trainval"
 DATA_PATH_V2 = "" ## Not used in the codebase.
 
 NUM_CLS = 10 # sunrgbd number of classes
@@ -46,37 +47,57 @@ MAX_NUM_2D_DET = 100 # maximum number of 2d boxes per image
 MAX_NUM_PIXEL = 530*730 # maximum number of pixels per image
 
 
+FEATURE_2D_PATH = ""
+PSEUDO_BOX_PATH = ""
+MAX_NUM_PSEUDO_BOX = 64
 
 class SunrgbdDatasetConfig(object):
     def __init__(self):
-        self.num_semcls = 10
+        self.num_semcls = 20
+        self.clip_embed_length = 640
         self.num_angle_bin = 12
         self.max_num_obj = 64
         self.type2class = {
-            "bed": 0,
-            "table": 1,
-            "sofa": 2,
-            "chair": 3,
-            "toilet": 4,
-            "desk": 5,
-            "dresser": 6,
-            "night_stand": 7,
-            "bookshelf": 8,
-            "bathtub": 9,
+            'bathtub': 0,
+            'bed': 1,
+            'bookshelf': 2,
+            'box': 3,
+            'chair': 4,
+            'counter': 5,
+            'desk': 6,
+            'door': 7,
+            'dresser': 8,
+            'lamp': 9,
+            'night_stand': 10,
+            'pillow': 11,
+            'sink': 12,
+            'sofa': 13,
+            'table': 14,
+            'tv': 15,
+            'toilet': 16
         }
         self.class2type = {self.type2class[t]: t for t in self.type2class}
         self.type2onehotclass = {
-            "bed": 0,
-            "table": 1,
-            "sofa": 2,
-            "chair": 3,
-            "toilet": 4,
-            "desk": 5,
-            "dresser": 6,
-            "night_stand": 7,
-            "bookshelf": 8,
-            "bathtub": 9,
+            'bathtub': 0,
+            'bed': 1,
+            'bookshelf': 2,
+            'box': 3,
+            'chair': 4,
+            'counter': 5,
+            'desk': 6,
+            'door': 7,
+            'dresser': 8,
+            'lamp': 9,
+            'night_stand': 10,
+            'pillow': 11,
+            'sink': 12,
+            'sofa': 13,
+            'table': 14,
+            'tv': 15,
+            'toilet': 16
         }
+        
+        self.support_class = np.array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
 
     def angle2class(self, angle):
         """Convert continuous angle to discrete class
@@ -150,6 +171,9 @@ class SunrgbdDetectionDataset(Dataset):
         dataset_config,
         split_set="train",
         root_dir=None,
+        meta_data_dir=None,
+        pseudo_box_dir=None,
+        feature_2d_dir=None,
         num_points=20000,
         use_color=False,
         use_image=False,
@@ -158,6 +182,8 @@ class SunrgbdDetectionDataset(Dataset):
         augment=False,
         use_random_cuboid=True,
         random_cuboid_min_points=30000,
+        use_pbox=False,
+        use_2d_feature=False
     ):
         assert num_points <= 50000
         assert split_set in ["train", "val", "trainval"]
@@ -166,8 +192,17 @@ class SunrgbdDetectionDataset(Dataset):
 
         if root_dir is None:
             root_dir = DATA_PATH_V1 if use_v1 else DATA_PATH_V2
+            
+        if pseudo_box_dir is None:
+            pseudo_box_dir = PSEUDO_BOX_PATH
+            
+        if feature_2d_dir is None:
+            feature_2d_dir = FEATURE_2D_PATH
 
         self.data_path = root_dir + "_%s" % (split_set)
+        self.raw_data_path = RAW_DATA_PATH
+        self.pseudo_box_dir = pseudo_box_dir
+        self.feature_2d_dir = feature_2d_dir
 
         if split_set in ["train", "val"]:
             self.scan_names = sorted(
@@ -188,6 +223,8 @@ class SunrgbdDetectionDataset(Dataset):
                 all_paths.extend(basenames)
             all_paths.sort()
             self.scan_names = all_paths
+            
+        # self.scan_names = self.scan_names[:100]
 
         self.num_points = num_points
         self.augment = augment
@@ -206,6 +243,12 @@ class SunrgbdDetectionDataset(Dataset):
             np.ones((1, 3), dtype=np.float32),
         ]
         self.max_num_obj = 64
+        
+        self.train = split_set == "train"
+        self.use_pbox = use_pbox
+        self.use_2d_feature = use_2d_feature
+        if use_pbox:
+            self.max_num_obj = MAX_NUM_PSEUDO_BOX
 
     def __len__(self):
         return len(self.scan_names)
@@ -219,77 +262,25 @@ class SunrgbdDetectionDataset(Dataset):
         point_cloud = np.load(scan_path + "_pc.npz")["pc"]  # Nx6
         bboxes = np.load(scan_path + "_bbox.npy")  # K,8
         
+        # ADD: remove gt box in novel set
+        if self.train:
+            mask = np.isin(bboxes[:, -1], self.dataset_config.support_class)
+            bboxes = bboxes[mask]
+        if self.use_pbox:
+            pseudo_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")
+            bboxes = np.concatenate([bboxes, pseudo_bboxes], axis=0)
+        if self.use_2d_feature:
+            feature_2d = np.load(os.path.join(self.feature_2d_dir, scan_name) + ".npy")
+        
         if self.use_image:
             # Read camera parameters
             calib_lines = [line for line in open(os.path.join(self.raw_data_path, 'calib', scan_name+'.txt')).readlines()]
             calib_Rtilt = np.reshape(np.array([float(x) for x in calib_lines[0].rstrip().split(' ')]), (3,3), 'F')
             calib_K = np.reshape(np.array([float(x) for x in calib_lines[1].rstrip().split(' ')]), (3,3), 'F')
             # Read image
-            full_img = cv2.imread(os.path.join(self.raw_data_path, 'image', scan_name+'.jpg'))
+            full_img = np.array(cv2.imread(os.path.join(self.raw_data_path, 'image', scan_name+'.jpg')))
             full_img_height = full_img.shape[0]
             full_img_width = full_img.shape[1]
-            
-            # ------------------------------- 2D IMAGE VOTES ------------------------------
-            cls_id_list = self.cls_id_map[scan_name]
-            cls_score_list = self.cls_score_map[scan_name]
-            bbox_2d_list = self.bbox_2d_map[scan_name]
-            obj_img_list = []
-            for i2d, (cls2d, box2d) in enumerate(zip(cls_id_list, bbox_2d_list)):
-                xmin, ymin, xmax, ymax = box2d
-                # During training we randomly drop 2D boxes to reduce over-fitting
-                if self.train and np.random.random()>0.5:
-                    continue
-
-                obj_img = full_img[ymin:ymax, xmin:xmax, :]
-                obj_h = obj_img.shape[0]
-                obj_w = obj_img.shape[1]
-                # Bounding box coordinates (4 values), class id, index to the semantic cues
-                meta_data = (xmin, ymin, obj_h, obj_w, cls2d, i2d)
-                if obj_h == 0 or obj_w == 0:
-                    continue
-
-                # Use 2D box center as approximation
-                uv_centroid = np.array([int(obj_w/2), int(obj_h/2)])
-                uv_centroid = np.expand_dims(uv_centroid, 0)
-
-                v_coords, u_coords = np.meshgrid(range(obj_h), range(obj_w), indexing='ij')
-                img_vote = np.transpose(np.array([u_coords, v_coords]), (1,2,0))
-                img_vote = np.expand_dims(uv_centroid, 0) - img_vote 
-
-                obj_img_list.append((meta_data, img_vote))
-
-            full_img_votes = np.zeros((full_img_height,full_img_width,self.vote_dims), dtype=np.float32)
-            # Empty votes: 2d box index is set to -1
-            full_img_votes[:,:,3::4] = -1.
-
-            for obj_img_data in obj_img_list:
-                meta_data, img_vote = obj_img_data
-                u0, v0, h, w, cls2d, i2d = meta_data
-                for u in range(u0, u0+w):
-                    for v in range(v0, v0+h):
-                        iidx = int(full_img_votes[v,u,0])
-                        if iidx >= self.max_imvote_per_pixel: 
-                            continue
-                        full_img_votes[v,u,(1+iidx*4):(1+iidx*4+2)] = img_vote[v-v0,u-u0,:]
-                        full_img_votes[v,u,(1+iidx*4+2)] = cls2d
-                        full_img_votes[v,u,(1+iidx*4+3)] = i2d + 1 # add +1 here as we need a dummy feature for pixels outside all boxes
-                full_img_votes[v0:(v0+h), u0:(u0+w), 0] += 1
-
-            full_img_votes_1d = np.zeros((MAX_NUM_PIXEL*self.vote_dims), dtype=np.float32)
-            full_img_votes_1d[0:full_img_height*full_img_width*self.vote_dims] = full_img_votes.flatten()
-
-            # Semantic cues: one-hot vector for class scores
-            cls_score_feats = np.zeros((1+MAX_NUM_2D_DET,NUM_CLS), dtype=np.float32)
-            # First row is dumpy feature
-            len_obj = len(cls_id_list)
-            if len_obj:
-                ind_obj = np.arange(1,len_obj+1)
-                ind_cls = np.array(cls_id_list)
-                cls_score_feats[ind_obj, ind_cls] = np.array(cls_score_list)
-
-            # Texture cues: normalized RGB values
-            full_img = (full_img - 128.) / 255.
-            # Serialize data to 1D and save image size so that we can recover the original location in the image
             full_img_1d = np.zeros((MAX_NUM_PIXEL*3), dtype=np.float32)
             full_img_1d[:full_img_height*full_img_width*3] = full_img.flatten()
 
@@ -460,4 +451,12 @@ class SunrgbdDetectionDataset(Dataset):
         ret_dict["gt_angle_residual_label"] = angle_residuals
         ret_dict["point_cloud_dims_min"] = point_cloud_dims_min
         ret_dict["point_cloud_dims_max"] = point_cloud_dims_max
+        if self.use_2d_feature:
+            ret_dict["feature_2d"] = feature_2d
+        if self.use_image:
+            ret_dict["image"] = full_img_1d
+            ret_dict["image_height"] = full_img_height
+            ret_dict["image_width"] = full_img_width
+            ret_dict["calib_Rtilt"] = calib_Rtilt
+            ret_dict["calib_K"] = calib_K
         return ret_dict

@@ -88,3 +88,211 @@ class image_processor():
                 print("found {} mappings in {} points from frame {}".format(indices_3ds[i][0], num_points, i))
             
         return indices_3ds, indices_2ds
+    
+    @staticmethod
+    def rotz(t):
+        """Rotation about the z-axis."""
+        c = np.cos(t)
+        s = np.sin(t)
+        return np.array([[c, -s,  0],
+                        [s,  c,  0],
+                        [0,  0,  1]])
+    
+    @staticmethod
+    def project_box_3d(calib, center, size, heading_angle=0):
+        R = image_processor.rotz(-1*heading_angle)
+        l,w,h = size
+        x_corners = [-l,l,l,-l,-l,l,l,-l]
+        y_corners = [w,w,-w,-w,w,w,-w,-w]
+        z_corners = [h,h,h,h,-h,-h,-h,-h]
+        corners_3d = np.dot(R, np.vstack([x_corners, y_corners, z_corners]))
+        corners_3d[0,:] += center[0]
+        corners_3d[1,:] += center[1]
+        corners_3d[2,:] += center[2]
+        corners_2d, _ = calib.project_upright_depth_to_image(np.transpose(corners_3d))
+        y1, x1 = np.min(corners_2d, 0)
+        y2, x2 = np.max(corners_2d, 0)
+        return np.array([x1, y1, x2, y2])
+    
+def project_box_3d_cuda(calib, center, size, heading_angle):
+    """
+    center: B, Q, 3
+    size: B, Q, 3
+    heading_angle: B, Q
+    """
+    R = rotz_cuda(-heading_angle)
+    l,w,h = torch.tensor_split(size, 3, dim=-1)
+    x_corners = torch.stack([-l,l,l,-l,-l,l,l,-l], -2).squeeze(-1)
+    y_corners = torch.stack([w,w,-w,-w,w,w,-w,-w], -2).squeeze(-1)
+    z_corners = torch.stack([h,h,h,h,-h,-h,-h,-h], -2).squeeze(-1)
+    corners_3d = R @ torch.stack([x_corners, y_corners, z_corners], -2) # ..., 3, 8
+    corners_3d += center[..., None]
+    corners_2d, _ = calib.project_upright_depth_to_image(corners_3d.transpose(-1, -2))
+    y1, x1 = torch.tensor_split(torch.min(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    y2, x2 = torch.tensor_split(torch.max(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    box_2d = torch.stack([x1, y1, x2, y2], -2).squeeze(-1)
+    return box_2d
+    
+def rotz_cuda(t: torch.Tensor):
+    """Rotation about the z-axis. Support batch ops. """
+    c = torch.cos(t)
+    s = torch.sin(t)
+    zeros = t.new_zeros(t.size())
+    ones = t.new_ones(t.size())
+    r1 = torch.stack([c, -s, zeros], dim=-1)
+    r2 = torch.stack([s, c, zeros], dim=-1)
+    r3 = torch.stack([zeros, zeros, ones], dim=-1)
+    rotation = torch.stack([r1, r2, r3], dim=-2) # B, Q, 3, 3
+    return rotation
+    
+class SUNRGBD_Calibration(object):
+    ''' Calibration matrices and utils
+        We define five coordinate system in SUN RGBD dataset
+
+        camera coodinate:
+            Z is forward, Y is downward, X is rightward
+
+        depth coordinate:
+            Just change axis order and flip up-down axis from camera coord
+
+        upright depth coordinate: tilted depth coordinate by Rtilt such that Z is gravity direction,
+            Z is up-axis, Y is forward, X is right-ward
+
+        upright camera coordinate:
+            Just change axis order and flip up-down axis from upright depth coordinate
+
+        image coordinate:
+            ----> x-axis (u)
+           |
+           v
+            y-axis (v) 
+
+        depth points are stored in upright depth coordinate.
+        labels for 3d box (basis, centroid, size) are in upright depth coordinate.
+        2d boxes are in image coordinate
+
+        We generate frustum point cloud and 3d box in upright camera coordinate
+    '''
+
+    def __init__(self, Rtilt, K):
+        self.Rtilt = Rtilt.cpu().numpy()
+        self.K = K.cpu().numpy()
+        self.f_u = self.K[0,0]
+        self.f_v = self.K[1,1]
+        self.c_u = self.K[0,2]
+        self.c_v = self.K[1,2]
+   
+    def project_upright_depth_to_camera(self, pc):
+        ''' project point cloud from depth coord to camera coordinate
+            Input: (N,3) Output: (N,3)
+        '''
+        # Project upright depth to depth coordinate
+        pc2 = np.dot(np.transpose(self.Rtilt), np.transpose(pc[:,0:3])) # (3,n)
+        return flip_axis_to_camera(np.transpose(pc2))
+
+    def project_upright_depth_to_image(self, pc):
+        ''' Input: (N,3) Output: (N,2) UV and (N,) depth '''
+        pc2 = self.project_upright_depth_to_camera(pc)
+        uv = np.dot(pc2, np.transpose(self.K)) # (n,3)
+        uv[:,0] /= uv[:,2]
+        uv[:,1] /= uv[:,2]
+        return uv[:,0:2], pc2[:,2]
+
+    def project_upright_depth_to_upright_camera(self, pc):
+        return flip_axis_to_camera(pc)
+
+    def project_upright_camera_to_upright_depth(self, pc):
+        return flip_axis_to_depth(pc)
+
+    def project_image_to_camera(self, uv_depth):
+        n = uv_depth.shape[0]
+        x = ((uv_depth[:,0]-self.c_u)*uv_depth[:,2])/self.f_u
+        y = ((uv_depth[:,1]-self.c_v)*uv_depth[:,2])/self.f_v
+        pts_3d_camera = np.zeros((n,3))
+        pts_3d_camera[:,0] = x
+        pts_3d_camera[:,1] = y
+        pts_3d_camera[:,2] = uv_depth[:,2]
+        return pts_3d_camera
+
+    def project_image_to_upright_camerea(self, uv_depth):
+        pts_3d_camera = self.project_image_to_camera(uv_depth)
+        pts_3d_depth = flip_axis_to_depth(pts_3d_camera)
+        pts_3d_upright_depth = np.transpose(np.dot(self.Rtilt, np.transpose(pts_3d_depth)))
+        return self.project_upright_depth_to_upright_camera(pts_3d_upright_depth)
+
+def flip_axis_to_camera(pc):
+    ''' Flip X-right,Y-forward,Z-up to X-right,Y-down,Z-forward
+        Input and output are both (N,3) array
+    '''
+    pc2 = np.copy(pc)
+    pc2[:,[0,1,2]] = pc2[:,[0,2,1]] # cam X,Y,Z = depth X,-Z,Y
+    pc2[:,1] *= -1
+    return pc2
+
+def flip_axis_to_depth(pc):
+    pc2 = np.copy(pc)
+    pc2[:,[0,1,2]] = pc2[:,[0,2,1]] # depth X,Y,Z = cam X,Z,-Y
+    pc2[:,2] *= -1
+    return pc2
+
+def flip_axis_to_camera_cuda(pc):
+    ''' Flip X-right,Y-forward,Z-up to X-right,Y-down,Z-forward
+        Input and output are both (..., N,3) array
+    '''
+    pc2 = torch.clone(pc)
+    pc2[...,[0,1,2]] = pc2[...,[0,2,1]] # cam X,Y,Z = depth X,-Z,Y
+    pc2[...,1] *= -1
+    return pc2
+
+class SUNRGBD_Calibration_cuda(object):
+    ''' Calibration matrices and utils
+        We define five coordinate system in SUN RGBD dataset
+
+        camera coodinate:
+            Z is forward, Y is downward, X is rightward
+
+        depth coordinate:
+            Just change axis order and flip up-down axis from camera coord
+
+        upright depth coordinate: tilted depth coordinate by Rtilt such that Z is gravity direction,
+            Z is up-axis, Y is forward, X is right-ward
+
+        upright camera coordinate:
+            Just change axis order and flip up-down axis from upright depth coordinate
+
+        image coordinate:
+            ----> x-axis (u)
+           |
+           v
+            y-axis (v) 
+
+        depth points are stored in upright depth coordinate.
+        labels for 3d box (basis, centroid, size) are in upright depth coordinate.
+        2d boxes are in image coordinate
+
+        We generate frustum point cloud and 3d box in upright camera coordinate
+    '''
+
+    def __init__(self, Rtilt, K):
+        self.Rtilt = Rtilt.float()
+        self.K = K.float()
+        self.f_u = self.K[0,0]
+        self.f_v = self.K[1,1]
+        self.c_u = self.K[0,2]
+        self.c_v = self.K[1,2]
+   
+    def project_upright_depth_to_camera(self, pc):
+        ''' project point cloud from depth coord to camera coordinate
+            Input: (..., N, 3) Output: (..., N, 3)
+        '''
+        # Project upright depth to depth coordinate
+        pc2 = self.Rtilt.T @ pc.transpose(-1, -2) # (3,n)
+        return flip_axis_to_camera_cuda(pc2.transpose(-1, -2))
+
+    def project_upright_depth_to_image(self, pc):
+        ''' Input: (..., N,3) Output: (..., N,2) UV and (..., N,) depth '''
+        pc2 = self.project_upright_depth_to_camera(pc)
+        uv = pc2 @ self.K.T # (n,3)
+        uv[...,0] /= uv[...,2]
+        uv[...,1] /= uv[...,2]
+        return uv[...,:2], pc2[..., 2]

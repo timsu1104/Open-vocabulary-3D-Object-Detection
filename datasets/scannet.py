@@ -29,8 +29,8 @@ SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_s
 SCANNET_FRAMES = os.path.join(SCANNET_FRAMES_ROOT, "{}/{}") # scene_id, mode
 SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAMES, "{}") # name of the file
 FEATURE_2D_PATH = '/data/suzhengyuan/ScanRefer/LSeg_data'
-PSEUDO_BOX_PATH = "/share/suzhengyuan/data/RegionCLIP_boxes/3DETR_adjusted/3D_GSS_GT_single"
-MAX_NUM_PSEUDO_BOX = 76
+PSEUDO_BOX_PATH = "" # "/share/suzhengyuan/data/RegionCLIP_boxes/3DETR_adjusted/3D_GSS_GT_multi_softnms"
+MAX_NUM_PSEUDO_BOX = 64
 
 
 class ScannetDatasetConfig(object):
@@ -54,7 +54,7 @@ class ScannetDatasetConfig(object):
             "desk": 10,
             "curtain": 11,
             "refrigerator": 12,
-            "showercurtrain": 13,
+            "shower curtain": 13,
             "toilet": 14,
             "sink": 15,
             "bathtub": 16,
@@ -86,7 +86,7 @@ class ScannetDatasetConfig(object):
             "desk": 12,
             "curtain": 13,
             "refrigerator": 14,
-            "showercurtrain": 15,
+            "shower curtain": 15,
             "toilet": 16,
             "sink": 17,
             "bathtub": 18,
