@@ -7,8 +7,8 @@
 """ Helper functions and class to calculate Average Precisions for 3D object detection. """
 
 import numpy as np
-from evaluation.eval_det import eval_det_multiprocessing, get_iou, get_iou_obb
-from evaluation.nms import nms_3d_faster, nms_3d_faster_samecls
+
+from utils.evaluation.nms import nms_3d_faster, nms_3d_faster_samecls
    
 def parse_groundtruths(inputs):
     """ Parse groundtruth labels to OBB parameters. 
@@ -198,7 +198,12 @@ class PRCalculator(object):
     def compute_metrics(self):
         """ Use accumulated predictions and groundtruths to compute Average Precision.
         """
-        rec, prec, ap = eval_det_multiprocessing(self.pred_map_cls, self.gt_map_cls, ovthresh=self.ap_iou_thresh, get_iou_func=get_iou if self.aabb else get_iou_obb)
+        if self.aabb:
+            from utils.evaluation.eval_det import eval_det_multiprocessing, get_iou
+            rec, prec, ap = eval_det_multiprocessing(self.pred_map_cls, self.gt_map_cls, ovthresh=self.ap_iou_thresh, get_iou_func=get_iou)
+        else:
+            from utils.evaluation.eval_det_obb import eval_det_multiprocessing, get_iou_obb
+            rec, prec, ap = eval_det_multiprocessing(self.pred_map_cls, self.gt_map_cls, ovthresh=self.ap_iou_thresh, get_iou_func=get_iou_obb)
         ret_dict = {} 
         prec_list = []
         for key in sorted(ap.keys()):

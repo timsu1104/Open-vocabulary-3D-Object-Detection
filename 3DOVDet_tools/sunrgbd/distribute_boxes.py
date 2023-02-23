@@ -18,8 +18,8 @@ from utils.constants import const_sunrgbd, regionclip_root
 if __name__ == '__main__':
     
     parser = ArgumentParser("3D Detection Using Transformers")
-    parser.add_argument('-i', "--input", default="inference_sunrgbd", type=str)
-    parser.add_argument('-o', "--output", default="2D", type=str)
+    parser.add_argument('-i', "--input", default="inference_sunrgbd_ov3detic", type=str)
+    parser.add_argument('-o', "--output", default="2D_ov3detic", type=str)
     parser.add_argument("--thresh", default=0.7, type=float)
     args = parser.parse_args()
     
@@ -31,7 +31,7 @@ if __name__ == '__main__':
     custom_img_path = const_sunrgbd.image_data_dir
     outfn_list = [os.path.join(output_path, (os.path.splitext(item)[0] + '.npy')) for item in os.listdir(custom_img_path)]
     
-    preds = torch.load(os.path.join(regionclip_root, 'instances_predictions.pth'))
+    preds = torch.load(os.path.join(regionclip_root, 'output', args.input, 'instances_predictions.pth'))
     assert len(preds) == len(outfn_list), f"{len(preds)} {len(outfn_list)}"
     
     stats = []

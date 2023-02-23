@@ -34,7 +34,7 @@ def polygon_clip(subjectPolygon, clipPolygon):
       dp = [ s[0] - e[0], s[1] - e[1] ]
       n1 = cp1[0] * cp2[1] - cp1[1] * cp2[0]
       n2 = s[0] * e[1] - s[1] * e[0] 
-      n3 = 1.0 / (dc[0] * dp[1] - dc[1] * dp[0])
+      n3 = 1.0 / (dc[0] * dp[1] - dc[1] * dp[0] + 1e-8)
       return [(n1*dp[0] - n2*dc[0]) * n3, (n1*dp[1] - n2*dc[1]) * n3]
  
    outputList = subjectPolygon
@@ -103,7 +103,7 @@ def is_clockwise(p):
     return np.dot(x,np.roll(y,1))-np.dot(y,np.roll(x,1)) > 0
 
 def box3d_iou(corners1, corners2):
-    ''' Compute 3D bounding box IoU.
+    """Compute 3D bounding box IoU.
 
     Input:
         corners1: numpy array (8,3), assume up direction is negative Y
@@ -113,13 +113,12 @@ def box3d_iou(corners1, corners2):
         iou_2d: bird's eye view 2D bounding box IoU
 
     todo (rqi): add more description on corner points' orders.
-    '''
+    """
     # corner points are in counter clockwise order
-    raise NotImplementedError("This VoteNet provided function is buggy, it could output iou>1")
-    rect1 = [(corners1[i,0], corners1[i,2]) for i in range(3,-1,-1)]
-    rect2 = [(corners2[i,0], corners2[i,2]) for i in range(3,-1,-1)] 
-    area1 = poly_area(np.array(rect1)[:,0], np.array(rect1)[:,1])
-    area2 = poly_area(np.array(rect2)[:,0], np.array(rect2)[:,1])
+    rect1 = [(corners1[i, 0], corners1[i, 2]) for i in range(3, -1, -1)]
+    rect2 = [(corners2[i, 0], corners2[i, 2]) for i in range(3, -1, -1)]
+    area1 = poly_area(np.array(rect1)[:, 0], np.array(rect1)[:, 1])
+    area2 = poly_area(np.array(rect2)[:, 0], np.array(rect2)[:, 1])
     inter, inter_area = convex_hull_intersection(rect1, rect2)
     iou_2d = inter_area/(area1+area2-inter_area)
     ymax = min(corners1[0,1], corners2[0,1])
@@ -127,7 +126,7 @@ def box3d_iou(corners1, corners2):
     inter_vol = inter_area * max(0.0, ymax-ymin)
     vol1 = box3d_vol(corners1)
     vol2 = box3d_vol(corners2)
-    iou = inter_vol / (vol1 + vol2 - inter_vol)
+    iou = inter_vol / (vol1 + vol2 - inter_vol + 1e-8)
     return iou, iou_2d
 
 
@@ -203,6 +202,14 @@ def roty(t):
     return np.array([[c,  0,  s],
                     [0,  1,  0],
                     [-s, 0,  c]])
+    
+def rotz(t):
+    """Rotation about the z-axis."""
+    c = np.cos(t)
+    s = np.sin(t)
+    return np.array([[c, -s,  0],
+                     [s,  c,  0],
+                     [0,  0,  1]])
 
 def roty_pytorch(t):
     """Rotation about the y-axis."""
@@ -228,6 +235,21 @@ def roty_batch(t):
     output[...,2,2] = c
     return output
 
+def flip_axis_to_camera_batch(box):
+    ''' Flip X-right, Y-forward, Z-up to X-right, Y-down, Z-forward
+        Input and output are both (N, 7) array
+    '''
+    new_box = box[..., [0,2,1,3,5,4,6]].copy() # cam X,Y,Z = depth X,-Z,Y
+    new_box[..., 1] *= -1
+    return new_box
+
+def flip_axis_to_camera(box):
+    ''' Flip X-right,Y-forward,Z-up to X-right,Y-down,Z-forward
+        Input and output are both (7,) array
+    '''
+    new_box = box[[0,2,1,3,5,4,6]].copy() # cam X,Y,Z = depth X,-Z,Y
+    new_box[1] *= -1
+    return new_box
 
 def get_3d_box(box_size, heading_angle, center):
     ''' box_size is array(l,w,h), heading_angle is radius clockwise from pos x axis, center is xyz of box center
@@ -245,6 +267,18 @@ def get_3d_box(box_size, heading_angle, center):
     corners_3d[2,:] = corners_3d[2,:] + center[2]
     corners_3d = np.transpose(corners_3d)
     return corners_3d
+
+def get_3d_box_uprightdepth(center, size, heading_angle):
+    R = rotz(-1*heading_angle)
+    l,w,h = size
+    x_corners = [-l/2,l/2,l/2,-l/2,-l/2,l/2,l/2,-l/2]
+    y_corners = [w/2,w/2,-w/2,-w/2,w/2,w/2,-w/2,-w/2]
+    z_corners = [h/2,h/2,h/2,h/2,-h/2,-h/2,-h/2,-h/2]
+    corners_3d = np.dot(R, np.vstack([x_corners, y_corners, z_corners]))
+    corners_3d[0,:] += center[0]
+    corners_3d[1,:] += center[1]
+    corners_3d[2,:] += center[2]
+    return np.transpose(corners_3d)
 
 def get_3d_box_pytorch(box_size, center):
     ''' box_size is array(l,w,h), heading_angle is radius clockwise from pos x axis, center is xyz of box center

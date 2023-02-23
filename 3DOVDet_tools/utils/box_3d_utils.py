@@ -1,4 +1,38 @@
 import numpy as np
+from sklearn.decomposition import PCA
+
+from utils.evaluation.eval_det_obb import get_iou_obb
+
+def rotz(t):
+    """Rotation about the z-axis."""
+    c = np.cos(t)
+    s = np.sin(t)
+    return np.array([[c, -s,  0],
+                     [s,  c,  0],
+                     [0,  0,  1]])
+
+def get_oriented_box_pca(pc):
+    """
+    generate an oriented box on pc. 
+    
+    pc (N, 3) in upright depth coords
+    """
+    center = pc.mean(0)
+    pc -= center
+    
+    topview = pc[:, :2]
+    ori = PCA(n_components=1).fit(topview).components_[0] # 2
+    ori /= np.linalg.norm(ori, 2)
+    heading_angle = -np.arctan2(ori[1], ori[0])
+    
+    R = rotz(heading_angle) # real2canonical
+    R_r = rotz(-heading_angle) # canonical2real
+    pc_rot = pc @ R.T
+    size = pc_rot.max(0) - pc_rot.min(0)
+    center_offset = (pc_rot.max(0) + pc_rot.min(0)) / 2
+    center += center_offset @ R_r.T
+    
+    return np.concatenate([center, size, heading_angle[None]], 0)
 
 def box_3d_iou(box_q, box_k, typ='vv', eps=1e-5):
     """
@@ -108,6 +142,48 @@ def nms_3d_faster(boxes, overlap_threshold, old_type=False, eps=1e-8, use_size=F
             o = inter / (volume[i] + volume[I[:last-1]] - inter)
         if class_wise:
             o = o * (cls1==cls2)
+            
+        inds = np.where(o>overlap_threshold)[0]
+        if lhs:
+            len_inds = len(inds)
+            for count in range((len_inds) // 2):
+                pick.append(I[inds[len_inds - count - 1]])
+
+        I = np.delete(I, np.concatenate(([last-1], inds)))
+
+    return boxes[np.array(pick)]
+
+def nms_3d_faster_obb(boxes, overlap_threshold, use_size=False, use_size_score=False, class_wise=False, size_typ=None, lhs=False):
+    """
+    GSS
+    boxes: (N, 7)
+    """
+    
+    size = boxes[:, 3:6]
+    score = boxes[:,-4]
+    label = boxes[:,-3]
+    
+    assert size_typ in [None, 'Volume', 'Area']
+    if size_typ is not None:
+        size = boxes[:, -2] if size_typ == 'Volume' else boxes[:, -1]
+        if use_size:
+            score = size
+        elif use_size_score: # geo, score, label, volume
+            score *= size
+
+    I = np.argsort(score)
+    pick = []
+    while (I.size!=0):
+        last = I.size
+        i = I[-1]
+        pick.append(i)
+        
+        o = np.array([
+            get_iou_obb(boxes[i, :7], boxes[I[j], :7]) for j in range(last-1)
+        ])# may be slow, check!
+            
+        if class_wise:
+            o = o * (label[i]==label[I[:last-1]])
             
         inds = np.where(o>overlap_threshold)[0]
         if lhs:

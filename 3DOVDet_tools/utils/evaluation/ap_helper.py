@@ -7,8 +7,8 @@
 """ Helper functions and class to calculate Average Precisions for 3D object detection. """
 
 import numpy as np
-from evaluation.eval_det import eval_det_multiprocessing, get_iou
-from evaluation.nms import nms_3d_faster, nms_3d_faster_samecls
+from utils.evaluation.eval_det import eval_det_multiprocessing, get_iou
+from utils.evaluation.nms import nms_3d_faster, nms_3d_faster_samecls
    
 def parse_groundtruths(inputs):
     """ Parse groundtruth labels to OBB parameters. 

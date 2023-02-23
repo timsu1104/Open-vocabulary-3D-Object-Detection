@@ -351,6 +351,7 @@ class SUNRGBD_Calibration(object):
     @staticmethod
     def project_label(semantic_labels, IGNORE_LABEL=-100):
         sunrgbd37ids = [36, 4, 10, 29, 5, 12, 14, 8, 17, 35, 32, 18, 34, 6, 7, 25, 33]
+        # sunrgbd37ids = [33, 4, 5, 6, 17, 0, 24, 35, 14, 7, 32, 3, 12, 0, 10, 18, 0, 34, 0]
         id2class = {
             id: i for i, id in enumerate(sunrgbd37ids)
         }

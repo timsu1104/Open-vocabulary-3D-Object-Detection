@@ -11,6 +11,8 @@ class ScannetConstants(object):
 class SunrgbdConstants(object):
     def __init__(self) -> None:
         self.root_dir = '/share/suzhengyuan/code/ScanRefer-3DVG/votenet/sunrgbd/sunrgbd_pc_bbox_50k_v1'
+        self.train_dir = self.root_dir + '_train'
+        self.val_dir = self.root_dir + '_val'
         
         self.raw_data_dir = '/share/suzhengyuan/code/ScanRefer-3DVG/votenet/sunrgbd/sunrgbd_trainval'
         self.image_data_dir = os.path.join(self.raw_data_dir, 'image')
@@ -41,6 +43,30 @@ class SunrgbdConstants(object):
             'tv': 15,
             'toilet': 16
         }
+        
+        # self.type2class = {
+        #     'toilet': 0,
+        #     'bed': 1,
+        #     'chair': 2,
+        #     'bathtub': 3,
+        #     'sofa': 4,
+        #     'dresser': 5,
+        #     'scanner': 6,
+        #     'fridge': 7,
+        #     'lamp': 8,
+        #     'desk': 9,
+        #     'table': 10,
+        #     'stand': 11,
+        #     'cabinet': 12,
+        #     'counter': 13,
+        #     'bin': 14,
+        #     'bookshelf': 15,
+        #     'pillow': 16,
+        #     'microwave': 17,
+        #     'sink': 18,
+        #     'stool': 19
+        # }
+        
         self.class2type = {self.type2class[t]: t for t in self.type2class}
         self.orient = True
         
@@ -57,7 +83,7 @@ class SunrgbdConstants(object):
             all_paths.extend(basenames)
         all_paths.sort()
         scan_names = all_paths
-        scan_names = [os.path.split(scan_name)[1] for scan_name in scan_names]
+        scan_names = list(set([os.path.split(scan_name)[1] for scan_name in scan_names]))
         return scan_names
         
 const_scannet = ScannetConstants()
