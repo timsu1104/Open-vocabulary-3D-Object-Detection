@@ -8,8 +8,8 @@ from time import time
 
 # configs
 IMAGE_PATH = '/home/zhengyuan/packages/RegionCLIP/datasets/custom_images'
-INPUT_PATH = '/home/zhengyuan/packages/RegionCLIP/output/inference_scannet'
-OUTPUT_PATH = '/share/suzhengyuan/data/RegionCLIP_boxes/2D_refined'
+INPUT_PATH = '/home/zhengyuan/packages/RegionCLIP/output/inference_scannet_nyu38_multigpu'
+OUTPUT_PATH = '/share/suzhengyuan/data/RegionCLIP_boxes/2D_nyu38_thresh0.7'
 os.makedirs(OUTPUT_PATH, exist_ok=True)
 THRESHOLD = 0.7
 
@@ -32,7 +32,7 @@ if __name__ == '__main__':
         os.makedirs(os.path.split(outfn)[0], exist_ok=True)
         filtered_box = np.array([
                 x['bbox'] + [x['score'], x['category_id']] # (0, 17)
-             for x in pred['instances'] if (x['score'] > THRESHOLD) and (x['category_id'] <= 17) # remove background
+             for x in pred['instances'] if (x['score'] > THRESHOLD)# and (x['category_id'] <= 17) # remove background
         ])
         np.save(outfn, filtered_box)
         print("Saved {}, box number {}. Time elapsed {}s. ".format(outfn, len(filtered_box), time() - s))

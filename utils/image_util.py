@@ -32,18 +32,8 @@ class image_processor():
         
         return image
     
-    def load_image(self, file, image_dims):
-        image = imread(file)
-        # preprocess
-        image = self.resize_crop_image(image, image_dims)
-        if len(image.shape) == 3: # color image
-            image =  np.transpose(image, [2, 0, 1])  # move feature to front
-            image = transforms.Normalize(mean=[0.496342, 0.466664, 0.440796], std=[0.277856, 0.28623, 0.291129])(torch.Tensor(image.astype(np.float32) / 255.0))
-        elif len(image.shape) == 2: # label image
-    #         image = np.expand_dims(image, 0)
-            pass
-        else:
-            raise
+    def load_image(self, file):
+        image = imread(file).astype(np.float32)
             
         return image
 
@@ -53,14 +43,28 @@ class image_processor():
         lines = [[x[0],x[1],x[2],x[3]] for x in (x.split(" ") for x in lines)]
 
         return np.asarray(lines).astype(np.float32)
+    
+    def load_intrinsic(self, filename):
+        lines = open(filename).read().splitlines()
+        assert len(lines) == 4
+        lines = [[x[0],x[1],x[2],x[3]] for x in (x.split(" ") for x in lines)]
 
-    def load_depth(self, file, image_dims):
+        return np.asarray(lines).astype(np.float32)
+
+    def load_depth(self, file):
         depth_image = imread(file)
-        # preprocess
-        depth_image = self.resize_crop_image(depth_image, image_dims)
         depth_image = depth_image.astype(np.float32) / 1000.0
 
         return depth_image
+    
+    def read_alignment(self, meta_file):
+        lines = open(meta_file).readlines()
+        axis_align_matrix = None
+        for line in lines:
+            if 'axisAlignment' in line:
+                axis_align_matrix = [float(x) for x in line.rstrip().strip('axisAlignment = ').split(' ')]
+        axis_align_matrix = np.array(axis_align_matrix).reshape((4,4))
+        return axis_align_matrix
     
     def compute_projection(self, points, depth, camera_to_world):
         """
@@ -121,17 +125,54 @@ def project_box_3d_cuda(calib, center, size, heading_angle):
     heading_angle: B, Q
     """
     R = rotz_cuda(-heading_angle)
-    l,w,h = torch.tensor_split(size, 3, dim=-1)
-    x_corners = torch.stack([-l,l,l,-l,-l,l,l,-l], -2).squeeze(-1)
-    y_corners = torch.stack([w,w,-w,-w,w,w,-w,-w], -2).squeeze(-1)
-    z_corners = torch.stack([h,h,h,h,-h,-h,-h,-h], -2).squeeze(-1)
+    l,w,h = torch.tensor_split(size / 2, 3, dim=-1)
+    x_corners = torch.cat([-l,l,l,-l,-l,l,l,-l], -1) # ..., 8
+    y_corners = torch.cat([w,w,-w,-w,w,w,-w,-w], -1)
+    z_corners = torch.cat([h,h,h,h,-h,-h,-h,-h], -1)
     corners_3d = R @ torch.stack([x_corners, y_corners, z_corners], -2) # ..., 3, 8
     corners_3d += center[..., None]
     corners_2d, _ = calib.project_upright_depth_to_image(corners_3d.transpose(-1, -2))
-    y1, x1 = torch.tensor_split(torch.min(corners_2d, -2)[0], 2, dim=-1) # ..., 2
-    y2, x2 = torch.tensor_split(torch.max(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    # y1, x1 = torch.tensor_split(torch.min(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    # y2, x2 = torch.tensor_split(torch.max(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    x1, y1 = torch.tensor_split(torch.min(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    x2, y2 = torch.tensor_split(torch.max(corners_2d, -2)[0], 2, dim=-1) # ..., 2
     box_2d = torch.stack([x1, y1, x2, y2], -2).squeeze(-1)
     return box_2d
+
+def project_box_3d_aabb(center, size, pose:torch.Tensor, intrinsic, axis_aligned_mat):
+    """
+    center: B, Q, 3
+    size: B, Q, 3
+    """
+    l,w,h = torch.tensor_split(size / 2, 3, dim=-1)
+    x_corners = torch.cat([-l,l,l,-l,-l,l,l,-l], -1) # ..., 8
+    y_corners = torch.cat([w,w,-w,-w,w,w,-w,-w], -1)
+    z_corners = torch.cat([h,h,h,h,-h,-h,-h,-h], -1)
+    corners_3d = torch.stack([x_corners, y_corners, z_corners], -2) # ..., 3, 8
+    corners_3d += center[..., None]
+    corners_3d = corners_3d.transpose(-1, -2) # ..., 8, 3, axis aligned bbox
+    
+    rot = axis_aligned_mat[:3, :3]
+    bias = axis_aligned_mat[:3, 3]
+    corners_3d = (corners_3d - bias) @ torch.inverse(rot.t())
+    # world_to_camera = torch.inverse(pose)
+    # rot = world_to_camera[:3, :3]
+    # bias = world_to_camera[:3, 3]
+    # corners_3d = (rot @ corners_3d.unsqueeze(-1)).squeeze(-1) + bias
+    rot = pose[:3, :3]
+    bias = pose[:3, 3]
+    corners_3d = (corners_3d - bias) @ torch.inverse(rot.t())
+    
+    x = (corners_3d[..., 0] * intrinsic[0][0]) / corners_3d[..., 2] + intrinsic[0][2]
+    y = (corners_3d[..., 1] * intrinsic[1][1]) / corners_3d[..., 2] + intrinsic[1][2]
+    
+    corners_2d = torch.stack([x, y], -1) # ..., 8, 2
+    # y1, x1 = torch.tensor_split(torch.min(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    # y2, x2 = torch.tensor_split(torch.max(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    x1, y1 = torch.tensor_split(torch.min(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    x2, y2 = torch.tensor_split(torch.max(corners_2d, -2)[0], 2, dim=-1) # ..., 2
+    box_2d = torch.cat([x1, y1, x2, y2], -1)
+    return box_2d, corners_3d[..., 2]
     
 def rotz_cuda(t: torch.Tensor):
     """Rotation about the z-axis. Support batch ops. """

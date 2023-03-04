@@ -1,5 +1,6 @@
 
 import numpy as np
+from utils.constants import const_sunrgbd
 
 class ProjectionHelper():
     def __init__(self, depth_min, depth_max, image_dims, cuda=True):
@@ -35,16 +36,27 @@ class ProjectionHelper():
         Input: nyu40 label
         Output: 0-17, -100 label
         """
-        if not PSEUDO_FLAG:
+        # if not PSEUDO_FLAG:
+        #     sem_seg_labels = np.ones_like(semantic_labels) * self.IGNORE_LABEL
+
+        #     for _c in self.nyu40ids:
+        #         sem_seg_labels[
+        #             semantic_labels == _c
+        #         ] = self.nyu40id2class[_c]
+        # else:
+        #     sem_seg_labels = semantic_labels
+        #     sem_seg_labels[semantic_labels >= 18] = self.IGNORE_LABEL
+        
+        if PSEUDO_FLAG:
+            sem_seg_labels = semantic_labels - 3
+            sem_seg_labels[sem_seg_labels < 0] = self.IGNORE_LABEL
+        else:
             sem_seg_labels = np.ones_like(semantic_labels) * self.IGNORE_LABEL
 
             for _c in self.nyu40ids:
                 sem_seg_labels[
                     semantic_labels == _c
                 ] = self.nyu40id2class[_c]
-        else:
-            sem_seg_labels = semantic_labels
-            sem_seg_labels[semantic_labels >= 18] = self.IGNORE_LABEL
         
         return sem_seg_labels
     
@@ -349,18 +361,26 @@ class SUNRGBD_Calibration(object):
         return pts_3d_upright_depth
 
     @staticmethod
-    def project_label(semantic_labels, IGNORE_LABEL=-100):
-        sunrgbd37ids = [36, 4, 10, 29, 5, 12, 14, 8, 17, 35, 32, 18, 34, 6, 7, 25, 33]
-        # sunrgbd37ids = [33, 4, 5, 6, 17, 0, 24, 35, 14, 7, 32, 3, 12, 0, 10, 18, 0, 34, 0]
-        id2class = {
-            id: i for i, id in enumerate(sunrgbd37ids)
-        }
-        sem_seg_labels = np.ones_like(semantic_labels) * IGNORE_LABEL
+    def project_label(semantic_labels, opts=None, IGNORE_LABEL=-100):
+        if opts.use_gt or opts.use_lseg:
+            sunrgbd37ids = [36, 4, 10, 29, 5, 12, 14, 8, 17, 35, 32, 18, 34, 6, 7, 25, 33]
+            # sunrgbd37ids = [33, 4, 5, 36, 6, 17, 0, 24, 35, 14, 7, 32, 3, 12, 0, 10, 18, 0, 34, 0]
+            id2class = {
+                id: i for i, id in enumerate(sunrgbd37ids)
+            }
+            sem_seg_labels = np.ones_like(semantic_labels) * IGNORE_LABEL
 
-        for _c in sunrgbd37ids:
-            sem_seg_labels[
-                semantic_labels == _c
-            ] = id2class[_c]
+            for _c in sunrgbd37ids:
+                if _c == 0: continue
+                sem_seg_labels[
+                    semantic_labels == _c
+                ] = id2class[_c]
+        elif opts.use_plus:
+            sem_seg_labels = semantic_labels.copy() - 2
+            sem_seg_labels[sem_seg_labels < 0] = IGNORE_LABEL
+            # sem_seg_labels[semantic_labels >= const_sunrgbd.num_sem_cls] = IGNORE_LABEL
+        else:
+            sem_seg_labels = semantic_labels.copy()
         return sem_seg_labels
 
 def flip_axis_to_camera(pc):

@@ -28,9 +28,10 @@ DATASET_METADATA_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/m
 SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_square"
 SCANNET_FRAMES = os.path.join(SCANNET_FRAMES_ROOT, "{}/{}") # scene_id, mode
 SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAMES, "{}") # name of the file
+SCANNET_META_PATH = os.path.join('/share/suzhengyuan/data/ScanNetv2/scan', '{}', '{}.txt')
 FEATURE_2D_PATH = '/data/suzhengyuan/ScanRefer/LSeg_data'
 PSEUDO_BOX_PATH = "" # "/share/suzhengyuan/data/RegionCLIP_boxes/3DETR_adjusted/3D_GSS_GT_multi_softnms"
-MAX_NUM_PSEUDO_BOX = 64
+MAX_NUM_PSEUDO_BOX = 300
 
 
 class ScannetDatasetConfig(object):
@@ -39,6 +40,7 @@ class ScannetDatasetConfig(object):
         self.clip_embed_length = 640
         self.num_angle_bin = 1
         self.max_num_obj = 64
+        self.max_num_frame = 417
 
         self.type2class = {
             "cabinet": 0,
@@ -58,7 +60,7 @@ class ScannetDatasetConfig(object):
             "toilet": 14,
             "sink": 15,
             "bathtub": 16,
-            "garbagebin": 17,
+            "other furniture": 17,
         }
         self.class2type = {self.type2class[t]: t for t in self.type2class}
         self.nyu40ids = np.array(
@@ -67,6 +69,8 @@ class ScannetDatasetConfig(object):
         self.nyu40id2class = {
             nyu40id: i for i, nyu40id in enumerate(list(self.nyu40ids))
         }
+        
+        self.support_class = self.nyu40ids[np.array([9, 10, 11, 12, 13, 14, 15, 16, 17])]
 
         # Semantic Segmentation Classes. Not used in 3DETR
         self.num_class_semseg = 20
@@ -174,10 +178,15 @@ class ScannetDetectionDataset(Dataset):
         self,
         dataset_config,
         split_set="train",
+        close_set=False,
         root_dir=None,
         meta_data_dir=None,
         pseudo_box_dir=None,
+        gss_box_dir=None,
         feature_2d_dir=None,
+        gss_feats_dir=None,
+        feature_global_dir=None,
+        pseudo_feature_dir=None,
         num_points=40000,
         use_color=False,
         use_image=False,
@@ -186,6 +195,8 @@ class ScannetDetectionDataset(Dataset):
         use_random_cuboid=True,
         random_cuboid_min_points=30000,
         use_pbox=False,
+        use_gss=False,
+        only_pbox=False,
         use_2d_feature=False
     ):
 
@@ -206,6 +217,13 @@ class ScannetDetectionDataset(Dataset):
         self.data_path = root_dir
         self.pseudo_box_dir = pseudo_box_dir
         self.feature_2d_dir = feature_2d_dir
+        self.gss_box_dir = gss_box_dir
+        self.gss_feats_dir = gss_feats_dir
+        self.feature_global_dir = feature_global_dir
+        self.pseudo_feature_dir = pseudo_feature_dir
+        self.train = split_set == "train"
+        self.close_set = close_set
+        self.only_pbox = only_pbox
         all_scan_names = list(
             set(
                 [
@@ -236,6 +254,7 @@ class ScannetDetectionDataset(Dataset):
         self.use_height = use_height
         self.augment = augment
         self.use_pbox = use_pbox
+        self.use_gss = use_gss
         self.use_2d_feature = use_2d_feature
         self.use_random_cuboid = use_random_cuboid
         self.random_cuboid_augmentor = RandomCuboid(min_points=random_cuboid_min_points)
@@ -246,9 +265,12 @@ class ScannetDetectionDataset(Dataset):
         
         if self.use_image:
             self.img_processor = image_processor()
+            self.max_num_frame = dataset_config.max_num_frame
             
         if use_pbox:
             self.dataset_config.max_num_obj = MAX_NUM_PSEUDO_BOX
+        
+        print("Dataset built.")
 
     def __len__(self):
         return len(self.scan_names)
@@ -256,33 +278,88 @@ class ScannetDetectionDataset(Dataset):
     def __getitem__(self, idx):
         scan_name = self.scan_names[idx]
         mesh_vertices = np.load(os.path.join(self.data_path, scan_name) + "_vert.npy")
-        if self.use_2d_feature:
-            pre_subsample_inds = np.load(os.path.join(self.data_path, scan_name) + "_inds.npy")
-        # semantic_labels = np.load(
-        #     os.path.join(self.data_path, scan_name) + "_sem_label.npy"
-        # )
+        
+        instance_bboxes = np.load(os.path.join(self.data_path, scan_name) + "_bbox.npy")
+                
+        mask = np.isin(instance_bboxes[:, -1], self.dataset_config.support_class)
         if self.use_pbox:
-            instance_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")
-        else: # Use gt box annotations
-            instance_bboxes = np.load(os.path.join(self.data_path, scan_name) + "_bbox.npy")
+            pseudo_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")[:, :7]
+            # pseudo_mask = np.isin(pseudo_bboxes[:, -1], self.dataset_config.support_class)
+        if self.use_gss:
+            gss_bboxes = np.load(os.path.join(self.gss_box_dir, scan_name) + "_prop.npy")[:, :7]
         
         if self.use_2d_feature:
-            feature_2d = np.load(os.path.join(self.feature_2d_dir, scan_name) + ".npy")
+            feature_2d = np.load(os.path.join(self.feature_2d_dir, scan_name) + "features.npy")
+            if self.feature_global_dir is not None:
+                feature_global = np.load(os.path.join(self.feature_global_dir, scan_name) + "features.npy")
+            if self.use_pbox:
+                assert self.pseudo_feature_dir is not None
+                pseudo_feature_2d = np.load(os.path.join(self.pseudo_feature_dir, scan_name) + "features.npy")
+                assert pseudo_feature_2d.shape[0] == pseudo_bboxes.shape[0]
+            if self.use_gss:
+                feature_gss = np.load(os.path.join(self.gss_feats_dir, scan_name) + "features.npy")
         
-        # TODO: acquire semantic labels using LSeg / OpenSeg + projection
+        if not self.close_set:
+            if self.train:
+                instance_bboxes = instance_bboxes[mask]
+                if self.use_2d_feature:
+                    feature_2d = feature_2d[mask]
+                if self.use_pbox:
+                    # pseudo_bboxes = pseudo_bboxes[~pseudo_mask]
+                    if self.use_2d_feature:
+                        feature_2d = np.concatenate([feature_2d, pseudo_feature_2d], 0)
+                if self.use_gss and self.use_2d_feature:
+                    feature_2d = np.concatenate([feature_2d, feature_gss], 0)
+            # else: # TTA
+            #     instance_bboxes = instance_bboxes[~mask]
+            #     if self.use_2d_feature:
+            #         feature_2d = feature_2d[~mask]
+            #     if self.use_pbox:
+            #         pseudo_bboxes = pseudo_bboxes[~pseudo_mask]
+            #         if self.use_2d_feature:
+            #             feature_2d = np.concatenate([feature_2d, pseudo_feature_2d[~pseudo_mask]], 0)
         
-        # TODO: acquire instance_bboxes using RegionCLIP + semantic labels + projection
+        confident_box_num = instance_bboxes.shape[0]
+        gt_box_num = instance_bboxes.shape[0]
+        
+        if self.use_pbox:
+            instance_bboxes = np.concatenate([instance_bboxes, pseudo_bboxes], axis=0)
+            confident_box_num += pseudo_bboxes.shape[0]
+        if self.use_gss:
+            instance_bboxes = np.concatenate([instance_bboxes, gss_bboxes], axis=0)
+        if self.only_pbox:
+            if self.use_gss:
+                instance_bboxes = np.load(os.path.join(self.gss_box_dir, scan_name) + "_prop.npy")[:, :6]
+                confident_box_num = instance_bboxes.shape[0]
+                gt_box_num = instance_bboxes.shape[0]
+            else:
+                instance_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")[:, :7]
+                confident_box_num = instance_bboxes.shape[0]
+                gt_box_num = instance_bboxes.shape[0]
+        
+        MAX_NUM_OBJ = self.dataset_config.max_num_obj
+        if self.use_2d_feature:
+            if self.use_gss: assert feature_gss.shape[0] == gss_bboxes.shape[0]
+            if self.use_pbox: assert pseudo_feature_2d.shape[0] == pseudo_bboxes.shape[0]
+            assert feature_2d.shape[0] == instance_bboxes.shape[0], f"{feature_2d.shape}, {instance_bboxes.shape}"
+            
+            if instance_bboxes.shape[0] > MAX_NUM_OBJ:
+                instance_bboxes = instance_bboxes[:MAX_NUM_OBJ]
+                feature_2d = feature_2d[:MAX_NUM_OBJ]
+                if confident_box_num > MAX_NUM_OBJ:
+                    confident_box_num = MAX_NUM_OBJ
         
         if self.use_image:
             # load frames
             frame_list = list(map(lambda x: x.split(".")[0], sorted(os.listdir(SCANNET_FRAMES.format(scan_name, "color")))))
-            scene_images = np.zeros((len(frame_list), 3, 256, 328))
-            scene_depths = np.zeros((len(frame_list), 32, 41))
-            scene_poses = np.zeros((len(frame_list), 4, 4))
+            scene_images = np.zeros((self.max_num_frame, 240, 320, 3))
+            scene_poses = np.zeros((self.max_num_frame, 4, 4))
             for i, frame_id in enumerate(frame_list):
-                scene_images[i] = self.img_processor.load_image(SCANNET_FRAME_PATH.format(scan_name, "color", "{}.jpg".format(frame_id)), [328, 256])
-                scene_depths[i] = self.img_processor.load_depth(SCANNET_FRAME_PATH.format(scan_name, "depth", "{}.png".format(frame_id)), [41, 32])
+                scene_images[i] = self.img_processor.load_image(SCANNET_FRAME_PATH.format(scan_name, "color", "{}.jpg".format(frame_id)))
                 scene_poses[i] = self.img_processor.load_pose(SCANNET_FRAME_PATH.format(scan_name, "pose", "{}.txt".format(frame_id)))
+            scene_intrinsics = self.img_processor.load_intrinsic(SCANNET_FRAMES.format(scan_name, 'intrinsic_depth.txt'))
+            scene_intrinsics[:2] /= 2
+            scene_axis_align_mat = self.img_processor.read_alignment(SCANNET_META_PATH.format(scan_name, scan_name))
 
         if not self.use_color:
             point_cloud = mesh_vertices[:, 0:3]  # do not use color for now
@@ -298,22 +375,27 @@ class ScannetDetectionDataset(Dataset):
             point_cloud = np.concatenate([point_cloud, np.expand_dims(height, 1)], 1)
 
         # ------------------------------- LABELS ------------------------------
-        MAX_NUM_OBJ = self.dataset_config.max_num_obj
         target_bboxes = np.zeros((MAX_NUM_OBJ, 6), dtype=np.float32)
         target_bboxes_mask = np.zeros((MAX_NUM_OBJ), dtype=np.float32)
+        box_mask = np.zeros((MAX_NUM_OBJ))
         angle_classes = np.zeros((MAX_NUM_OBJ,), dtype=np.int64)
         angle_residuals = np.zeros((MAX_NUM_OBJ,), dtype=np.float32)
         raw_sizes = np.zeros((MAX_NUM_OBJ, 3), dtype=np.float32)
         raw_angles = np.zeros((MAX_NUM_OBJ,), dtype=np.float32)
 
-        # if self.augment and self.use_random_cuboid:
-        #     (
-        #         point_cloud,
-        #         instance_bboxes,
-        #         per_point_labels,
-        #     ) = self.random_cuboid_augmentor(
-        #         point_cloud, instance_bboxes, [semantic_labels]
-        #     )
+        if self.augment and self.use_random_cuboid:
+            (
+                point_cloud,
+                instance_bboxes,
+                per_point_labels,
+                keep_boxes
+            ) = self.random_cuboid_augmentor(
+                point_cloud, instance_bboxes
+            )
+            if keep_boxes is not None:
+                gt_box_num = keep_boxes[:gt_box_num].sum()
+                confident_box_num = keep_boxes[:confident_box_num].sum()
+                feature_2d = feature_2d[keep_boxes]
         #     semantic_labels = per_point_labels[0]
 
         point_cloud, choices = pc_util.random_sampling(
@@ -329,10 +411,9 @@ class ScannetDetectionDataset(Dataset):
         #     ] = self.dataset_config.nyu40id2class_semseg[_c]
 
         pcl_color = pcl_color[choices]
-        if self.use_2d_feature:
-            feature_2d = feature_2d[pre_subsample_inds][choices]
 
-        target_bboxes_mask[0 : instance_bboxes.shape[0]] = 1
+        box_mask[0 : instance_bboxes.shape[0]] = 1
+        target_bboxes_mask[0 : confident_box_num] = 1
         target_bboxes[0 : instance_bboxes.shape[0], :] = instance_bboxes[:, 0:6]
 
         # ------------------------------- DATA AUGMENTATION ------------------------------
@@ -389,8 +470,10 @@ class ScannetDetectionDataset(Dataset):
         ret_dict["point_clouds"] = point_cloud.astype(np.float32)
         if self.use_image:
             ret_dict["images"] = scene_images.astype(np.float32)
-            ret_dict["depths"] = scene_depths.astype(np.float32)
             ret_dict["poses"] = scene_poses.astype(np.float32)
+            ret_dict["intrinsics"] = scene_intrinsics.astype(np.float32)
+            ret_dict["axis_align_mat"] = scene_axis_align_mat.astype(np.float32)
+            ret_dict["frame_length"] = np.array(len(frame_list)).astype(np.int64)
         ret_dict["gt_box_corners"] = box_corners.astype(np.float32)
         ret_dict["gt_box_centers"] = box_centers.astype(np.float32)
         ret_dict["gt_box_centers_normalized"] = box_centers_normalized.astype(
@@ -398,17 +481,24 @@ class ScannetDetectionDataset(Dataset):
         )
         ret_dict["gt_angle_class_label"] = angle_classes.astype(np.int64)
         ret_dict["gt_angle_residual_label"] = angle_residuals.astype(np.float32)
-        target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
-        target_bboxes_semcls[0 : instance_bboxes.shape[0]] = [
-            self.dataset_config.nyu40id2class[int(x)]
-            for x in instance_bboxes[:, -1][0 : instance_bboxes.shape[0]]
-        ]
-        ret_dict["gt_box_sem_cls_label"] = target_bboxes_semcls.astype(np.int64)
+        if not self.only_pbox:
+            target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
+            target_bboxes_semcls[0 : gt_box_num] = [
+                self.dataset_config.nyu40id2class[int(x)]
+                for x in instance_bboxes[:, -1][0 : gt_box_num]
+            ]
+            ret_dict["gt_box_sem_cls_label"] = target_bboxes_semcls.astype(np.int64)
+        
         ret_dict["gt_box_present"] = target_bboxes_mask.astype(np.float32)
+        ret_dict["gt_box_all"] = box_mask.astype(np.float32)
         ret_dict["scan_idx"] = np.array(idx).astype(np.int64)
         ret_dict["pcl_color"] = pcl_color
         if self.use_2d_feature:
-            ret_dict["feature_2d"] = feature_2d
+            clip_features = np.zeros((MAX_NUM_OBJ, 640))
+            clip_features[:feature_2d.shape[0]] = feature_2d
+            ret_dict["feature_2d"] = clip_features
+            if self.feature_global_dir is not None:
+                ret_dict["feature_global"] = feature_global # 640
         ret_dict["gt_box_sizes"] = raw_sizes.astype(np.float32)
         ret_dict["gt_box_sizes_normalized"] = box_sizes_normalized.astype(np.float32)
         ret_dict["gt_box_angles"] = raw_angles.astype(np.float32)

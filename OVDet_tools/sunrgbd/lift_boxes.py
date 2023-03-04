@@ -3,8 +3,18 @@ Lift 2D boxes to 3D.
 
 Example Usage: 
 python sunrgbd/lift_boxes.py -i 2D -o 3D_LSeg_obb --test
+python sunrgbd/lift_boxes.py -i 2D -o 3D_GT_obb_gssaabb --use_gt
 
-python sunrgbd/lift_boxes.py -i 2D_ov3detic -o 3D_LSeg_obb_ov3detic --test
+python sunrgbd/lift_boxes.py -i 2D_ov3detic -o 3D_LSeg_obb_ov3detic_gssaabb_maskclip --gss_prop SZ+V-V+F
+
+python sunrgbd/lift_boxes.py -i 2D -o 3D_maskclip_obb_gssaabb
+python sunrgbd/lift_boxes.py -i 2D_ov3detic -o 3D_maskclip+_ov3detic --use_plus
+
+python sunrgbd/lift_boxes.py -i 2D_all -o 3D_LSeg_obb_all --use_lseg
+
+python sunrgbd/lift_boxes.py -i 2D_all -o 3D_LSeg_obb_all_nms5 --use_lseg --thresh_nms 0.5
+
+python sunrgbd/lift_boxes.py -i 2D_nyu38 -o 3D_maskclip_nyu38 --use_plus
 """
 import os, sys
 import numpy as np
@@ -23,8 +33,12 @@ from utils.box_3d_utils import nms_3d_faster_obb, get_oriented_box_pca, get_iou_
 from utils.constants import const_sunrgbd
 
 # Configuration
-PSEUDO_LABEL_ROOT = "/data1/lseg_data/data/sunrgbd/pseudo_labels"
-PSEUDO_LABEL_PATH = os.path.join(PSEUDO_LABEL_ROOT, "{}.npy")
+LSEG_PSEUDO_LABEL_ROOT = "/data1/lseg_data/data/sunrgbd/pseudo_labels"
+LSEG_PSEUDO_LABEL_PATH = os.path.join(LSEG_PSEUDO_LABEL_ROOT, "{}.npy")
+MASKCLIP_PSEUDO_LABEL_ROOT = "/data1/lseg_data/data/sunrgbd_binary"
+MASKCLIP_PSEUDO_LABEL_PATH = os.path.join(MASKCLIP_PSEUDO_LABEL_ROOT, "{}/{}.png") # type, scene_id
+MASKCLIPPLUS_PSEUDO_LABEL_ROOT = "/data1/lseg_data/data/sunrgbd40_maskclip_plus"
+MASKCLIPPLUS_PSEUDO_LABEL_PATH = os.path.join(MASKCLIPPLUS_PSEUDO_LABEL_ROOT, "{}.png") # type, scene_id
 
 CALIB_PATH = os.path.join(const_sunrgbd.calib_data_dir, "{}.txt")
 DEPTH_PATH = os.path.join(const_sunrgbd.depth_data_dir, "{}.png")
@@ -38,7 +52,7 @@ def cat_box(box_list, l=8):
     else:
         return np.stack(box_list, 0)
 
-def compute_box(boxes, labels, depths, calib):
+def compute_box(boxes, labels, depths, calib, binary=True):
     """
         :param points: tensor containing all points of the point cloud (num_points, 3)
         :param depth: depth map (size: proj_image)
@@ -47,12 +61,13 @@ def compute_box(boxes, labels, depths, calib):
         :return mask bool, (num_points, )
     """
     
-    v, u = np.indices(labels.shape)
+    v, u = np.indices(depths.shape)
     boxes_3d = []
     for box in boxes:
         x, y, w, h = box[:4]
         box_label = int(box[-1])
-        mask = (u >= x) * (u <= x+w) * (v >= y) * (v <= y+h) * (labels == box_label) * (depths > 0)
+        label_mask = labels[box_label] == 2 if binary else labels == box_label
+        mask = (u >= x) * (u <= x+w) * (v >= y) * (v <= y+h) * label_mask * (depths > 0)
         mask = mask.astype('bool')
         if mask.sum() > 1:
             uv_depth = np.stack([u[mask], v[mask], depths[mask]], -1)
@@ -83,23 +98,28 @@ def lifting(scan_name, debug=False, opts=None):
     # Read data
     if opts.use_gt:
         semantic_labels = np.array(Image.open(GT_LABEL_PATH.format(scan_name)))
+    elif opts.use_lseg:
+        semantic_labels = np.load(LSEG_PSEUDO_LABEL_PATH.format(scan_name)) + 1
+    elif opts.use_plus:
+        semantic_labels = np.asarray(Image.open(MASKCLIPPLUS_PSEUDO_LABEL_PATH.format(scan_name)))
     else:
-        semantic_labels = np.load(PSEUDO_LABEL_PATH.format(scan_name)) + 1
+        semantic_labels = {c: np.array(Image.open(MASKCLIP_PSEUDO_LABEL_PATH.format(t, scan_name))) for t, c in const_sunrgbd.type2class.items()}
     calibrater = SUNRGBD_Calibration(CALIB_PATH.format(scan_name))
     depth = np.array(Image.open(DEPTH_PATH.format(scan_name))) / 8000
     
     boxes = np.load(in_fn) 
     
     # remove box at edge
-    boxes = get_edge_mask(boxes, semantic_labels.shape)
+    boxes = get_edge_mask(boxes, depth.shape)
     total_box = boxes.shape[0]
     
     io_time = time() - start
     start = time()
     
     # lifting
-    sem_seg_labels = SUNRGBD_Calibration.project_label(semantic_labels)
-    boxes = compute_box(boxes, sem_seg_labels, depth, calibrater)
+    semantic_labels = SUNRGBD_Calibration.project_label(semantic_labels, opts)
+    
+    boxes = compute_box(boxes, semantic_labels, depth, calibrater, binary=not (opts.use_gt or opts.use_lseg or opts.use_plus))
     if boxes.shape[0] == 0:
         np.save(out_fn, boxes)
         print("Saving {}, {}/{} boxes in total. IO time {}s. ".format(scan_name + "_bbox.npy", boxes.shape[0], total_box, io_time))
@@ -113,8 +133,6 @@ def lifting(scan_name, debug=False, opts=None):
     
     nms_time = time() - start
     start = time()
-    
-    box_pool = np.zeros((0, 8))
     
     if not opts.no_gss:
         # Find the GSS proposal that is close to our proposal
@@ -131,9 +149,8 @@ def lifting(scan_name, debug=False, opts=None):
             if box[-2] > tmp_score[index]:
                 labels[index] = box[-1]
                 tmp_score[index] = box[-2]
-        scale = box_pool[:, 3:6]
         if not aabb_f: box_pool = box_pool[:, :-1]
-        box_pool = np.concatenate([box_pool, np.stack([tmp_score, labels, np.prod(scale, axis=-1), 2 * np.sum(scale * np.roll(scale, 1, axis=-1), axis=-1)], axis=1)], axis=-1)
+        box_pool = np.concatenate([box_pool, np.stack([tmp_score, labels], axis=1)], axis=-1)
         boxes = box_pool[labels != -100] # center, size, angle, score, label, size, area
         if boxes.shape[0] == 0:
             np.save(out_fn, boxes)
@@ -144,7 +161,7 @@ def lifting(scan_name, debug=False, opts=None):
     boxes = nms_3d_faster_obb(boxes, opts.thresh_size, use_size_score=True, class_wise=True, size_typ="Volume")
 
     boxes[:, 3:6] /= 2
-    boxes[:, [-4, -3]] = boxes[:, [-3, -4]] # labels, score, volume, area
+    boxes[:, [7, 8]] = boxes[:, [8, 7]] # labels, score, volume, area
     np.save(out_fn, boxes)
     print("Saving {}, {}/{} boxes in total, elapsed {}s (IO {}s, LIFT {}s, NMS {}s, GSS {}s).".format(scan_name + "_bbox.npy", boxes.shape[0], total_box, io_time + lift_time + nms_time + gss_time, io_time, lift_time, nms_time, gss_time))
     return boxes.shape[0]
@@ -154,12 +171,14 @@ if __name__ == '__main__':
     parser = ArgumentParser("3D Detection Using Transformers")
     parser.add_argument('-i', "--input", default="2D", type=str)
     parser.add_argument('-o', "--output", default="3D_LSeg_woprior", type=str)
-    parser.add_argument("--gss_prop", default="SZ+V-obb-V+F-obb", type=str)
+    parser.add_argument("--gss_prop", default="SZ+V-V+F", type=str)
     parser.add_argument("--thresh_nms", default=0.7, type=float)
     parser.add_argument("--thresh_size", default=0, type=float)
     parser.add_argument("--thresh_match", default=0.3, type=float)
     parser.add_argument("--test", default=False, action="store_true")
     parser.add_argument("--use_gt", default=False, action="store_true")
+    parser.add_argument("--use_lseg", default=False, action="store_true")
+    parser.add_argument("--use_plus", default=False, action="store_true")
     parser.add_argument("--no_gss", default=False, action="store_true")
     args = parser.parse_args()
     

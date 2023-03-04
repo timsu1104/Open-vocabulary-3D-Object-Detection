@@ -2,11 +2,14 @@
 Lift 2D boxes to 3D.
 The core function for cropping is PROJECTOR.compute_frustum_box. 
 """
-import os
+import os, sys
 import numpy as np
 import multiprocessing as mp
+mp.set_start_method('forkserver', force=True)
 from time import time
 
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
 from utils.projection import ProjectionHelper
 from utils.box_3d_utils import nms_3d_faster, box_3d_iou, vv2cs, cs2vv
 from utils.io_utils import load_pose, read_alignment, load_intrinsic, get_scene_list, load_depth, load_label
@@ -14,18 +17,19 @@ from utils.io_utils import load_pose, read_alignment, load_intrinsic, get_scene_
 DATASET_ROOT_DIR = '/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/scannet_train_detection_data'
 SCANNET_DIR = '/share/suzhengyuan/data/ScanNetv2/scan'
 SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_square"
-SCANNET_LABEL_ROOT = "/data1/lseg_data/data/scannet/pseudo_labels" # LSeg segmentation result
+SCANNET_LABEL_ROOT = "/data1/lseg_data/data/scannet/pseudo_labels_maskclip"
+# "/data1/lseg_data/data/scannet/pseudo_labels" # LSeg segmentation result
 # SCANNET_2DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/2D_refined"
-SCANNET_2DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/2D_refined"
-SCANNET_3DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/3D_LSeg_woprior" # output path
+SCANNET_2DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/2D_nyu38_thresh0.7"
+SCANNET_3DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/3D_MaskCLIP" # output path
 VIEW = 'multi'
 PSEUDO_FLAG = True
 NMS_THRESH = 0.7
 SIZE_NMS_THRESH = 0
 USE_GSS = True
 MATCH_THRESH = 0.3
-GSS_BASE = "/share/suzhengyuan/code/WyPR/gss/computed_proposal_scannet/SZ+V+SG-V+F"
-# "/home/zhengyuan/code/OVDet/third_party/gss/scannet_gss_unsup"
+GSS_BASE = "/share/suzhengyuan/code/WyPR/gss/computed_proposal_scannet/SZ+V+maskclip-V+F"
+# GSS_BASE = "/home/zhengyuan/code/OVDet/third_party/gss/scannet_gss_unsup"
 
 DEBUG=True # replace existing files
 TEST = False # only run on scene0000_00
@@ -105,7 +109,7 @@ def lifting(scan_name):
             semantic_labels = np.stack([load_label(SCANNET_FRAME_PATH.format(scan_name, "label-mapped", "{}.png".format(frame_id))) for frame_id in frame_list])
     elif PSEUDO_FLAG:
         point_cloud = semantic_labels[:, :3]
-        semantic_labels = semantic_labels[:, 3]
+        semantic_labels = semantic_labels[:, 3] + 1
         
     intrinsic = load_intrinsic(SCANNET_FRAMES.format(scan_name, 'intrinsic_depth.txt'))
     
@@ -176,13 +180,15 @@ if __name__ == '__main__':
     scene_list = get_scene_list()
     
     # test
-    lifting(scene_list[0])
-    if TEST: exit(0)
-    print("[INFO] Testing Complete. Launching pipeline....")
+    if TEST:
+        lifting(scene_list[0])
+        print("[INFO] Testing Complete.")
+        exit(0)
     
+    mp.freeze_support()
     start = time()
-    p = mp.Pool(mp.cpu_count())
-    result = p.map(lifting, scene_list[1:])
+    p = mp.Pool(processes=mp.cpu_count() // 2)
+    result = p.map(lifting, scene_list)
     p.close()
     p.join()
     print("Done! Elapsed {}s. Box stats: Avg {}, Max {}".format(time() - start, sum(result) / len(result), max(result)))

@@ -6,7 +6,7 @@ import numpy as np
 from time import time
 from datetime import datetime
 
-from utils.scannet_io_utils import read_alignment, write_ply_rgb, align_mesh, load_intrinsic, load_depth, load_pose, load_image
+from utils.io_utils import read_alignment, write_ply_rgb, align_mesh, load_intrinsic, load_depth, load_pose, load_image
 
 # Visualization Configurations
 SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_square"

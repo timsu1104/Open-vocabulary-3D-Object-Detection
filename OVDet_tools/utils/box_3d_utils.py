@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from sklearn.decomposition import PCA
 
 from utils.evaluation.eval_det_obb import get_iou_obb
@@ -91,6 +92,63 @@ def box_3d_iou(box_q, box_k, typ='vv', eps=1e-5):
     return iou
 
 
+def box_3d_iou_tensor(box_q, box_k, typ='vv', eps=1e-5):
+    """
+    3d iou between axis aligned boxes
+    box_q: 6, 
+    box_k: B, 6
+    box: xyz xyz
+    
+    return: iou: B, 
+    """
+    
+    box_q = box_q[None, :]
+    
+    if typ == 'vv':
+        x1q = box_q[:,0]
+        y1q = box_q[:,1]
+        z1q = box_q[:,2]
+        x2q = box_q[:,3]
+        y2q = box_q[:,4]
+        z2q = box_q[:,5]
+        x1k = box_k[:,0]
+        y1k = box_k[:,1]
+        z1k = box_k[:,2]
+        x2k = box_k[:,3]
+        y2k = box_k[:,4]
+        z2k = box_k[:,5]
+    elif typ == 'cs':
+        x1q = box_q[:,0] - box_q[:,3] / 2
+        y1q = box_q[:,1] - box_q[:,4] / 2
+        z1q = box_q[:,2] - box_q[:,5] / 2
+        x2q = box_q[:,0] + box_q[:,3] / 2
+        y2q = box_q[:,1] + box_q[:,4] / 2
+        z2q = box_q[:,2] + box_q[:,5] / 2
+        x1k = box_k[:,0] - box_k[:,3] / 2
+        y1k = box_k[:,1] - box_k[:,4] / 2
+        z1k = box_k[:,2] - box_k[:,5] / 2
+        x2k = box_k[:,0] + box_k[:,3] / 2
+        y2k = box_k[:,1] + box_k[:,4] / 2
+        z2k = box_k[:,2] + box_k[:,5] / 2
+        
+
+    box_q_volume = (x2q-x1q) * (y2q-y1q) * (z2q-z1q)
+    box_k_volume = (x2k-x1k) * (y2k-y1k) * (z2k-z1k)
+
+    xi = torch.maximum(x1q, x1k)
+    yi = torch.maximum(y1q, y1k)
+    zi = torch.maximum(z1q, z1k)
+    corner_xi = torch.minimum(x2q, x2k)
+    corner_yi = torch.minimum(y2q, y2k)
+    corner_zi = torch.minimum(z2q, z2k)
+
+    intersection = torch.maximum(corner_xi - xi, 0) * torch.maximum(corner_yi - yi, 0) * torch.maximum(corner_zi - zi, 0)
+
+    iou = intersection / (box_q_volume + box_k_volume - intersection + eps)
+
+    return iou
+
+
 def nms_3d_faster(boxes, overlap_threshold, old_type=False, eps=1e-8, use_size=False, use_size_score=False, class_wise=False, size_typ=None, lhs=False):
     """
     GSS
@@ -160,12 +218,12 @@ def nms_3d_faster_obb(boxes, overlap_threshold, use_size=False, use_size_score=F
     """
     
     size = boxes[:, 3:6]
-    score = boxes[:,-4]
-    label = boxes[:,-3]
+    score = boxes[:,7]
+    label = boxes[:,8]
     
     assert size_typ in [None, 'Volume', 'Area']
     if size_typ is not None:
-        size = boxes[:, -2] if size_typ == 'Volume' else boxes[:, -1]
+        size = np.prod(size, axis=-1) if size_typ == 'Volume' else 2 * np.sum(size * np.roll(size, 1, axis=-1), axis=-1)
         if use_size:
             score = size
         elif use_size_score: # geo, score, label, volume

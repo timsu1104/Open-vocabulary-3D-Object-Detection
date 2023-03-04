@@ -29,8 +29,8 @@ if __name__ == '__main__':
     scan_path = args.scene_id
     
     start = time()
-    point_cloud = np.load(os.path.join(const_sunrgbd.root_dir+'_train', scan_path + "_pc.npz"))["pc"]
-    gt_boxes = np.load(os.path.join(const_sunrgbd.root_dir+'_train', scan_path + "_bbox.npy"))
+    point_cloud = np.load(os.path.join(const_sunrgbd.train_dir, scan_path + "_pc.npz"))["pc"]
+    gt_boxes = np.load(os.path.join(const_sunrgbd.train_dir, scan_path + "_bbox.npy"))
     os.makedirs(os.path.split(VIS_PATH)[0], exist_ok=True)
     prop = np.load(os.path.join(const_sunrgbd.box_root, args.box, scan_path + "_bbox.npy"))
     write_ply_rgb(point_cloud[..., :3], point_cloud[..., 3:6]*256, VIS_PATH.format('pointcloud'))
@@ -50,7 +50,7 @@ if __name__ == '__main__':
             else:
                 box_label = box[7]
                 box[6] *= -1
-            write_oriented_bbox(box[None, :7], VIS_PATH.format(f'{i}-prop-{const_sunrgbd.class2type[box_label]}'))
+            write_oriented_bbox(box[None, :7], VIS_PATH.format(f'{i}-prop-{box_label}'))
             # write_bbox(box, GT_MODE, VIS_PATH.format(f'{i}-prop-{const_sunrgbd.class2type[box_label]}'))
 
     print("Done! Elapsed {}s.".format(time() - start))

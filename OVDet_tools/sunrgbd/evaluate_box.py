@@ -23,9 +23,10 @@ def compute_precision_recall(scan_names, args):
     
     ap_calculator = PRCalculator(iou_thresh, const_sunrgbd.class2type, obb=True) 
     all_p = []
+    empty_scenes = []
     for scan_name in tqdm(scan_names):
         prop_i = np.load(os.path.join(os.path.join(const_sunrgbd.box_root, tag), scan_name+'_bbox.npy'))
-        if prop_i.shape[0] == 0: continue
+        if prop_i.shape[0] == 0: empty_scenes.append(scan_name)
         prop_i[:, 3:6] *= 2
         if aabb_f:
             box_len = 6
@@ -45,7 +46,7 @@ def compute_precision_recall(scan_names, args):
 
         ap_calculator.step([batch_pred_map_cls], [batch_gt_map_cls])
     print('-'*10, f'prop: iou_thresh: {iou_thresh}', '-'*10)
-    print("avg num: %.2f total number: %d" % (np.mean(all_p), sum(all_p)))
+    print("avg num: %.2f total number: %d Empty Scenes %d" % (np.mean(all_p), sum(all_p), len(empty_scenes)))
     metrics_dict = ap_calculator.compute_metrics()
     for key in metrics_dict:
         print('eval %s: %f'%(key, metrics_dict[key]))

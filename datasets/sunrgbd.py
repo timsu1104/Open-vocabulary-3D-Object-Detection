@@ -49,7 +49,7 @@ MAX_NUM_PIXEL = 530*730 # maximum number of pixels per image
 
 FEATURE_2D_PATH = ""
 PSEUDO_BOX_PATH = ""
-MAX_NUM_PSEUDO_BOX = 64
+MAX_NUM_PSEUDO_BOX = 500 # 200
 
 class SunrgbdDatasetConfig(object):
     def __init__(self):
@@ -57,47 +57,70 @@ class SunrgbdDatasetConfig(object):
         self.clip_embed_length = 640
         self.num_angle_bin = 12
         self.max_num_obj = 64
+        # self.type2class = {
+        #     'bathtub': 0,
+        #     'bed': 1,
+        #     'bookshelf': 2,
+        #     'box': 3,
+        #     'chair': 4,
+        #     'counter': 5,
+        #     'desk': 6,
+        #     'door': 7,
+        #     'dresser': 8,
+        #     'lamp': 9,
+        #     'night_stand': 10,
+        #     'pillow': 11,
+        #     'sink': 12,
+        #     'sofa': 13,
+        #     'table': 14,
+        #     'tv': 15,
+        #     'toilet': 16
+        # }
         self.type2class = {
-            'bathtub': 0,
+            'toilet': 0,
             'bed': 1,
-            'bookshelf': 2,
-            'box': 3,
-            'chair': 4,
-            'counter': 5,
-            'desk': 6,
-            'door': 7,
-            'dresser': 8,
-            'lamp': 9,
-            'night_stand': 10,
-            'pillow': 11,
-            'sink': 12,
-            'sofa': 13,
-            'table': 14,
-            'tv': 15,
-            'toilet': 16
+            'chair': 2,
+            'bathtub': 3,
+            'sofa': 4,
+            'dresser': 5,
+            'scanner': 6,
+            'fridge': 7,
+            'lamp': 8,
+            'desk': 9,
+            'table': 10,
+            'stand': 11,
+            'cabinet': 12,
+            'counter': 13,
+            'bin': 14,
+            'bookshelf': 15,
+            'pillow': 16,
+            'microwave': 17,
+            'sink': 18,
+            'stool': 19
         }
         self.class2type = {self.type2class[t]: t for t in self.type2class}
-        self.type2onehotclass = {
-            'bathtub': 0,
-            'bed': 1,
-            'bookshelf': 2,
-            'box': 3,
-            'chair': 4,
-            'counter': 5,
-            'desk': 6,
-            'door': 7,
-            'dresser': 8,
-            'lamp': 9,
-            'night_stand': 10,
-            'pillow': 11,
-            'sink': 12,
-            'sofa': 13,
-            'table': 14,
-            'tv': 15,
-            'toilet': 16
-        }
-        
+        # self.type2onehotclass = {
+        #     'bathtub': 0,
+        #     'bed': 1,
+        #     'bookshelf': 2,
+        #     'box': 3,
+        #     'chair': 4,
+        #     'counter': 5,
+        #     'desk': 6,
+        #     'door': 7,
+        #     'dresser': 8,
+        #     'lamp': 9,
+        #     'night_stand': 10,
+        #     'pillow': 11,
+        #     'sink': 12,
+        #     'sofa': 13,
+        #     'table': 14,
+        #     'tv': 15,
+        #     'toilet': 16
+        # }
+        # self.support_class = np.array([2, 5, 10, 11, 12, 14])        
         self.support_class = np.array([10, 11, 12, 13, 14, 15, 16, 17, 18, 19])
+        # self.support_class = np.array([9, 10, 11, 12, 13, 14, 15, 16])
 
     def angle2class(self, angle):
         """Convert continuous angle to discrete class
@@ -170,10 +193,15 @@ class SunrgbdDetectionDataset(Dataset):
         self,
         dataset_config,
         split_set="train",
+        close_set=False,
         root_dir=None,
         meta_data_dir=None,
         pseudo_box_dir=None,
+        gss_box_dir=None,
         feature_2d_dir=None,
+        gss_feats_dir=None,
+        feature_global_dir=None,
+        pseudo_feature_dir=None,
         num_points=20000,
         use_color=False,
         use_image=False,
@@ -183,6 +211,8 @@ class SunrgbdDetectionDataset(Dataset):
         use_random_cuboid=True,
         random_cuboid_min_points=30000,
         use_pbox=False,
+        use_gss=False,
+        only_pbox=False,
         use_2d_feature=False
     ):
         assert num_points <= 50000
@@ -199,10 +229,14 @@ class SunrgbdDetectionDataset(Dataset):
         if feature_2d_dir is None:
             feature_2d_dir = FEATURE_2D_PATH
 
-        self.data_path = root_dir + "_%s" % (split_set)
+        self.data_path = root_dir + "_%s" % (split_set) + '_ov3detic_filtered'
         self.raw_data_path = RAW_DATA_PATH
         self.pseudo_box_dir = pseudo_box_dir
         self.feature_2d_dir = feature_2d_dir
+        self.gss_box_dir = gss_box_dir
+        self.gss_feats_dir = gss_feats_dir
+        self.feature_global_dir = feature_global_dir
+        self.pseudo_feature_dir = pseudo_feature_dir
 
         if split_set in ["train", "val"]:
             self.scan_names = sorted(
@@ -245,9 +279,12 @@ class SunrgbdDetectionDataset(Dataset):
         self.max_num_obj = 64
         
         self.train = split_set == "train"
+        self.close_set = close_set
         self.use_pbox = use_pbox
+        self.use_gss = use_gss
+        self.only_pbox = only_pbox
         self.use_2d_feature = use_2d_feature
-        if use_pbox:
+        if use_pbox or only_pbox:
             self.max_num_obj = MAX_NUM_PSEUDO_BOX
 
     def __len__(self):
@@ -262,16 +299,76 @@ class SunrgbdDetectionDataset(Dataset):
         point_cloud = np.load(scan_path + "_pc.npz")["pc"]  # Nx6
         bboxes = np.load(scan_path + "_bbox.npy")  # K,8
         
-        # ADD: remove gt box in novel set
-        if self.train:
-            mask = np.isin(bboxes[:, -1], self.dataset_config.support_class)
-            bboxes = bboxes[mask]
-        if self.use_pbox:
-            pseudo_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")
-            bboxes = np.concatenate([bboxes, pseudo_bboxes], axis=0)
         if self.use_2d_feature:
-            feature_2d = np.load(os.path.join(self.feature_2d_dir, scan_name) + ".npy")
+            feature_2d = np.load(os.path.join(self.feature_2d_dir, scan_name) + "features.npy")
+            if self.feature_global_dir is not None:
+                feature_global = np.load(os.path.join(self.feature_global_dir, scan_name) + "features.npy")
+            if self.use_pbox:
+                assert self.pseudo_feature_dir is not None
+                pseudo_feature_2d = np.load(os.path.join(self.pseudo_feature_dir, scan_name) + "features.npy")
+            if self.use_gss:
+                feature_gss = np.load(os.path.join(self.gss_feats_dir, scan_name) + "features.npy")
+            
+        # ADD: remove gt box in novel set
+        mask = np.isin(bboxes[:, -1], self.dataset_config.support_class)
+        if self.use_pbox:
+            pseudo_bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")[:, :8]
+            # pseudo_mask = np.isin(pseudo_bboxes[:, -1], self.dataset_config.support_class)
+        if self.use_gss:
+            gss_bboxes = np.load(os.path.join(self.gss_box_dir, scan_name) + "_prop.npy")[:, :8]
+            
+        if not self.close_set:
+            if self.train:
+                bboxes = bboxes[mask]
+                if self.use_2d_feature:
+                    feature_2d = feature_2d[mask]
+                if self.use_pbox:
+                    # pseudo_bboxes = pseudo_bboxes[~pseudo_mask]
+                    if self.use_2d_feature:
+                        # feature_2d = np.concatenate([feature_2d, pseudo_feature_2d[~pseudo_mask]], 0)
+                        feature_2d = np.concatenate([feature_2d, pseudo_feature_2d], 0)
+                if self.use_gss and self.use_2d_feature:
+                    feature_2d = np.concatenate([feature_2d, feature_gss], 0)
+            # else: # TTA
+            #     bboxes = bboxes[~mask]
+            #     if self.use_2d_feature:
+            #         feature_2d = feature_2d[~mask]
+            #     if self.use_pbox:
+            #         pseudo_bboxes = pseudo_bboxes[~pseudo_mask]
+            #         if self.use_2d_feature:
+            #             feature_2d = np.concatenate([feature_2d, pseudo_feature_2d[~pseudo_mask]], 0)
         
+        confident_box_num = bboxes.shape[0]
+        gt_box_num = bboxes.shape[0]
+                    
+        if self.use_pbox:
+            bboxes = np.concatenate([bboxes, pseudo_bboxes], axis=0)
+            confident_box_num += pseudo_bboxes.shape[0]
+        if self.use_gss:
+            bboxes = np.concatenate([bboxes, gss_bboxes], axis=0)
+        if self.only_pbox:
+            if self.use_gss:
+                bboxes = np.load(os.path.join(self.gss_box_dir, scan_name) + "_prop.npy")[:, :7]
+                confident_box_num = bboxes.shape[0]
+                gt_box_num = bboxes.shape[0]
+            else:
+                bboxes = np.load(os.path.join(self.pseudo_box_dir, scan_name) + "_bbox.npy")[:, :8]
+                confident_box_num = bboxes.shape[0]
+                gt_box_num = bboxes.shape[0]
+        
+        MAX_NUM_OBJ = self.dataset_config.max_num_obj
+        if self.use_2d_feature:
+            if self.use_gss: assert feature_gss.shape[0] == gss_bboxes.shape[0]
+            if self.use_pbox: assert pseudo_feature_2d.shape[0] == pseudo_bboxes.shape[0], f"{pseudo_feature_2d.shape} {pseudo_bboxes.shape}"
+            assert feature_2d.shape[0] == bboxes.shape[0], f"{feature_2d.shape}, {bboxes.shape}"
+            
+            if bboxes.shape[0] > MAX_NUM_OBJ:
+                bboxes = bboxes[:MAX_NUM_OBJ]
+                feature_2d = feature_2d[:MAX_NUM_OBJ]
+                if confident_box_num > MAX_NUM_OBJ:
+                    confident_box_num = MAX_NUM_OBJ
+        
+                    
         if self.use_image:
             # Read camera parameters
             calib_lines = [line for line in open(os.path.join(self.raw_data_path, 'calib', scan_name+'.txt')).readlines()]
@@ -344,26 +441,32 @@ class SunrgbdDetectionDataset(Dataset):
                 point_cloud[:, -1] *= scale_ratio[0, 0]
 
             if self.use_random_cuboid:
-                point_cloud, bboxes, _ = self.random_cuboid_augmentor(
+                point_cloud, bboxes, _, keep_boxes = self.random_cuboid_augmentor(
                     point_cloud, bboxes
                 )
+                if keep_boxes is not None:
+                    gt_box_num = keep_boxes[:gt_box_num].sum()
+                    confident_box_num = keep_boxes[:confident_box_num].sum()
+                    feature_2d = feature_2d[keep_boxes]
 
         # ------------------------------- LABELS ------------------------------
         angle_classes = np.zeros((self.max_num_obj,), dtype=np.float32)
         angle_residuals = np.zeros((self.max_num_obj,), dtype=np.float32)
         raw_angles = np.zeros((self.max_num_obj,), dtype=np.float32)
         raw_sizes = np.zeros((self.max_num_obj, 3), dtype=np.float32)
+        box_mask = np.zeros((self.max_num_obj))
+        box_mask[0 : bboxes.shape[0]] = 1
         label_mask = np.zeros((self.max_num_obj))
-        label_mask[0 : bboxes.shape[0]] = 1
-        max_bboxes = np.zeros((self.max_num_obj, 8))
-        max_bboxes[0 : bboxes.shape[0], :] = bboxes
+        label_mask[0 : confident_box_num] = 1
+        # max_bboxes = np.zeros((self.max_num_obj, 8))
+        # max_bboxes[0 : bboxes.shape[0], :] = bboxes
 
         target_bboxes_mask = label_mask
         target_bboxes = np.zeros((self.max_num_obj, 6))
 
         for i in range(bboxes.shape[0]):
             bbox = bboxes[i]
-            semantic_class = bbox[7]
+            # semantic_class = bbox[7]
             raw_angles[i] = bbox[6] % 2 * np.pi
             box3d_size = bbox[3:6] * 2
             raw_sizes[i, :] = box3d_size
@@ -391,6 +494,11 @@ class SunrgbdDetectionDataset(Dataset):
                 ]
             )
             target_bboxes[i, :] = target_bbox
+        
+        if self.use_2d_feature:
+            assert feature_2d.shape[0] == bboxes.shape[0], f"{feature_2d.shape}, {bboxes.shape}"
+            clip_features = np.zeros((self.max_num_obj, 640))
+            clip_features[:feature_2d.shape[0]] = feature_2d
 
         point_cloud, choices = pc_util.random_sampling(
             point_cloud, self.num_points, return_choices=True
@@ -416,7 +524,7 @@ class SunrgbdDetectionDataset(Dataset):
             dst_range=self.center_normalizing_range,
         )
         box_centers_normalized = box_centers_normalized.squeeze(0)
-        box_centers_normalized = box_centers_normalized * target_bboxes_mask[..., None]
+        box_centers_normalized = box_centers_normalized * box_mask[..., None]
 
         # re-encode angles to be consistent with VoteNet eval
         angle_classes = angle_classes.astype(np.int64)
@@ -439,10 +547,13 @@ class SunrgbdDetectionDataset(Dataset):
         ret_dict["gt_box_centers_normalized"] = box_centers_normalized.astype(
             np.float32
         )
-        target_bboxes_semcls = np.zeros((self.max_num_obj))
-        target_bboxes_semcls[0 : bboxes.shape[0]] = bboxes[:, -1]  # from 0 to 9
-        ret_dict["gt_box_sem_cls_label"] = target_bboxes_semcls.astype(np.int64)
+        
+        if not self.only_pbox:
+            target_bboxes_semcls = np.zeros((64, )) # np.zeros((self.max_num_obj))
+            target_bboxes_semcls[0 : gt_box_num] = bboxes[:gt_box_num, -1]  # from 0 to 9
+            ret_dict["gt_box_sem_cls_label"] = target_bboxes_semcls.astype(np.int64)
         ret_dict["gt_box_present"] = target_bboxes_mask.astype(np.float32)
+        ret_dict["gt_box_all"] = box_mask.astype(np.float32)
         ret_dict["scan_idx"] = np.array(idx).astype(np.int64)
         ret_dict["gt_box_sizes"] = raw_sizes.astype(np.float32)
         ret_dict["gt_box_sizes_normalized"] = box_sizes_normalized.astype(np.float32)
@@ -452,7 +563,9 @@ class SunrgbdDetectionDataset(Dataset):
         ret_dict["point_cloud_dims_min"] = point_cloud_dims_min
         ret_dict["point_cloud_dims_max"] = point_cloud_dims_max
         if self.use_2d_feature:
-            ret_dict["feature_2d"] = feature_2d
+            ret_dict["feature_2d"] = clip_features
+            if self.feature_global_dir is not None:
+                ret_dict["feature_global"] = feature_global # 640
         if self.use_image:
             ret_dict["image"] = full_img_1d
             ret_dict["image_height"] = full_img_height

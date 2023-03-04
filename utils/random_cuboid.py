@@ -87,12 +87,14 @@ class RandomCuboid(object):
                         # current data augmentation removes all boxes in the pointcloud. fail!
                         continue
                     new_boxes = target_boxes[keep_boxes]
+                else:
+                    keep_boxes = None
                 if per_point_labels is not None:
                     new_per_point_labels = [x[new_pointidx] for x in per_point_labels]
                 else:
                     new_per_point_labels = None
                 # if we are here, all conditions are met. return boxes
-                return new_point_cloud, new_boxes, new_per_point_labels
+                return new_point_cloud, new_boxes, new_per_point_labels, keep_boxes
 
         # fallback
-        return point_cloud, target_boxes, per_point_labels
+        return point_cloud, target_boxes, per_point_labels, None

@@ -9,9 +9,15 @@ GT_MODE = 0
 PRED_MODE = 1
 
 SCAN_LIST = '/home/zhengyuan/packages/RegionCLIP/datasets/scannetv2_train.txt'
+SCAN_VAL_LIST = '/home/zhengyuan/packages/RegionCLIP/datasets/scannetv2_val.txt'
 
 def get_scene_list():
     with open(SCAN_LIST, "r") as f:
+        scan_names = f.read().splitlines()
+    return scan_names
+
+def get_scene_val_list():
+    with open(SCAN_VAL_LIST, "r") as f:
         scan_names = f.read().splitlines()
     return scan_names
 

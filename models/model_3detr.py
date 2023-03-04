@@ -55,11 +55,17 @@ class BoxProcessor(object):
             angle[mask] = angle[mask] - 2 * np.pi
         return angle
 
-    def compute_objectness_and_cls_prob(self, cls_logits):
-        assert cls_logits.shape[-1] == self.dataset_config.num_semcls + 1
+    # def compute_objectness_and_cls_prob(self, cls_logits):
+    #     assert cls_logits.shape[-1] == self.dataset_config.num_semcls
+    #     cls_prob = torch.nn.functional.softmax(cls_logits, dim=-1)
+    #     objectness_prob = 1 - cls_prob[..., -1]
+    #     return cls_prob[..., :-1], objectness_prob
+    
+    def compute_objectness_and_cls_prob(self, cls_logits, obj_logits):
+        assert cls_logits.shape[-1] == self.dataset_config.num_semcls
         cls_prob = torch.nn.functional.softmax(cls_logits, dim=-1)
-        objectness_prob = 1 - cls_prob[..., -1]
-        return cls_prob[..., :-1], objectness_prob
+        objectness_prob = 1 -  torch.nn.functional.softmax(obj_logits, dim=-1)[..., -1]
+        return cls_prob, objectness_prob
 
     def box_parametrization_to_corners(
         self, box_center_unnorm, box_size_unnorm, box_angle
@@ -95,6 +101,7 @@ class Model3DETR(nn.Module):
         text_embedding,
         encoder_dim=256,
         decoder_dim=256,
+        clip_embed_dim=640, 
         position_embedding="fourier",
         mlp_dropout=0.3,
         num_queries=256,
@@ -102,7 +109,7 @@ class Model3DETR(nn.Module):
         super().__init__()
         self.pre_encoder = pre_encoder
         self.encoder = encoder
-        self.class_num = dataset_config.num_semcls + 1
+        self.class_num = dataset_config.num_semcls
         if hasattr(self.encoder, "masking_radius"):
             hidden_dims = [encoder_dim]
         else:
@@ -118,6 +125,7 @@ class Model3DETR(nn.Module):
             output_use_norm=True,
             output_use_bias=False,
         )
+        # self.global_embedding = nn.Linear(clip_embed_dim, decoder_dim)
         self.pos_embedding = PositionEmbeddingCoordsSine(
             d_pos=decoder_dim, pos_type=position_embedding, normalize=True
         )
@@ -149,10 +157,12 @@ class Model3DETR(nn.Module):
         # Semantic class of the box
         # add 1 for background/not-an-object class
         visual_embed_head = mlp_func(output_dim=dataset_config.clip_embed_length)
-        semcls_head = nn.Linear(640, self.class_num, bias=False)
-        assert semcls_head.weight.size() == text_embedding.size(), f"{semcls_head.weight.size()} {text_embedding.size()}"
-        semcls_head.weight = nn.Parameter(text_embedding, requires_grad=False)
+        # semcls_head = nn.Linear(640, self.class_num, bias=False)
+        # assert semcls_head.weight.size() == text_embedding.size(), f"{semcls_head.weight.size()} {text_embedding.size()}"
+        # semcls_head.weight = nn.Parameter(text_embedding, requires_grad=False)
+        self.text_embed = text_embedding.cuda()
         # semcls_head = mlp_func(output_dim=dataset_config.num_semcls + 1)
+        semcls_head = mlp_func(output_dim=2)
 
         # geometry of the box
         center_head = mlp_func(output_dim=3)
@@ -235,8 +245,9 @@ class Model3DETR(nn.Module):
 
         # mlp head outputs are (num_layers x batch) x noutput x nqueries, so transpose last two dims
         visual_embeds = self.mlp_heads["visual_embed_head"](box_features).transpose(1, 2)
-        cls_logits = self.mlp_heads["sem_cls_head"](visual_embeds).transpose(1, 2)
-        # cls_logits = self.mlp_heads["sem_cls_head"](box_features).transpose(1, 2)
+        openset_cls_logits = visual_embeds @ self.text_embed.transpose(0, 1)
+        obj_logits = self.mlp_heads["sem_cls_head"](box_features).transpose(1, 2)
+        # assert openset_cls_logits.size() == cls_logits.size()
         center_offset = (
             self.mlp_heads["center_head"](box_features).sigmoid().transpose(1, 2) - 0.5
         )
@@ -250,7 +261,8 @@ class Model3DETR(nn.Module):
 
         # reshape outputs to num_layers x batch x nqueries x noutput
         visual_embeds = visual_embeds.reshape(num_layers, batch, num_queries, -1)
-        cls_logits = cls_logits.reshape(num_layers, batch, num_queries, -1)
+        obj_logits = obj_logits.reshape(num_layers, batch, num_queries, -1)
+        cls_logits = openset_cls_logits.reshape(num_layers, batch, num_queries, -1)
         center_offset = center_offset.reshape(num_layers, batch, num_queries, -1)
         size_normalized = size_normalized.reshape(num_layers, batch, num_queries, -1)
         angle_logits = angle_logits.reshape(num_layers, batch, num_queries, -1)
@@ -286,10 +298,11 @@ class Model3DETR(nn.Module):
                 (
                     semcls_prob,
                     objectness_prob,
-                ) = self.box_processor.compute_objectness_and_cls_prob(cls_logits[l])
+                ) = self.box_processor.compute_objectness_and_cls_prob(cls_logits[l], obj_logits[l])
 
             box_prediction = {
                 "visual_embeds": visual_embeds[l],
+                "objectness_logits": obj_logits[l],
                 "sem_cls_logits": cls_logits[l],
                 "center_normalized": center_normalized.contiguous(),
                 "center_unnormalized": center_unnormalized,
@@ -327,6 +340,10 @@ class Model3DETR(nn.Module):
         if encoder_only:
             # return: batch x npoints x channels
             return enc_xyz, enc_features.transpose(0, 1)
+        
+        # acquire global feature
+        global_features = enc_features.mean(0) # return: batch x channels (=decoder_dim)
+        # enc_features = self.global_embedding(enc_features)
 
         point_cloud_dims = [
             inputs["point_cloud_dims_min"],
@@ -347,6 +364,7 @@ class Model3DETR(nn.Module):
         box_predictions = self.get_box_predictions(
             query_xyz, point_cloud_dims, box_features
         )
+        box_predictions['global_feats'] = global_features
         return box_predictions
 
 

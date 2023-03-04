@@ -1,19 +1,22 @@
 """
 Toy example to visualize RGB-D boxes on pointcloud. 
 """
-import os
+import os, sys
 import numpy as np
 from time import time
 from datetime import datetime
 from tqdm import tqdm
 
-from utils.scannet_io_utils import read_mesh_vertices_rgb, read_alignment, write_bbox, write_ply_rgb, GT_MODE, class2type, align_mesh
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
+from utils.io_utils import read_mesh_vertices_rgb, read_alignment, write_bbox, write_ply_rgb, GT_MODE, class2type, align_mesh, nyu40id2class
 
 # Visualization Configurations
-SCANNET_3DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/3D_GSS_LSeg_multi" # output path
+# SCANNET_3DBOXS = "/share/suzhengyuan/data/RegionCLIP_boxes/3D_GSS_LSeg_multi" # output path
+SCANNET_3DBOXS = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/scannet_train_detection_data" # output path
 SCANNET_DIR = "/share/suzhengyuan/data/ScanNetv2/scan"
-SCENE_ID = "scene0000_00"
-VIS_ROOT = "/home/zhengyuan/packages/RegionCLIP/output/visualizations"
+SCENE_ID = "scene0568_00"
+VIS_ROOT = "/home/zhengyuan/code/OVDet/visualize"
 
 # constructions
 BOX_TAG = os.path.split(SCANNET_3DBOXS)[1]
@@ -45,9 +48,9 @@ if __name__ == '__main__':
     # print(boxes)
     for i, box in enumerate(tqdm(boxes)):
         # box: 6 + 1
-        box_label = box[6]
+        box_label = nyu40id2class[box[6]]
         box[6] = 0
-        write_bbox(box, GT_MODE, VIS_PATH.format(f'{i}-{class2type[box_label]}-score{box[7]}-size{box[8]}-area{box[9]}'))
+        write_bbox(box, GT_MODE, VIS_PATH.format(f'{i}-{class2type[box_label]}'))#-score{box[7]}-size{box[8]}-area{box[9]}'))
     # biggest_box = np.zeros(7)
     # biggest_box[:3] = (point_cloud.max(0) + point_cloud.min(0)) / 2
     # biggest_box[3:6] = point_cloud.max(0) - point_cloud.min(0)

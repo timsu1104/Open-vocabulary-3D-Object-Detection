@@ -2,7 +2,8 @@
 Split RegionCLIP detected box into multiple files. 
 
 Example Usage: 
-python sunrgbd/distribute_boxes.py -o 2D -i inference_sunrgbd
+python sunrgbd/distribute_boxes.py -o 2D_all -i inference_sunrgbd --thresh 0
+python sunrgbd/distribute_boxes.py -o 2D_nyu38 -i inference_sunrgbd_nyu38 --thresh 0.7
 """
 import os, sys
 import numpy as np
@@ -40,7 +41,7 @@ if __name__ == '__main__':
         os.makedirs(os.path.split(outfn)[0], exist_ok=True)
         filtered_box = np.array([
                 x['bbox'] + [x['score'], x['category_id']] # (0, 19)
-             for x in pred['instances'] if (x['score'] > args.thresh) and (x['category_id'] <= 19) # remove background
+             for x in pred['instances'] if (x['score'] > args.thresh) # and (x['category_id'] <= 19) # remove background
         ])
         np.save(outfn, filtered_box)
         print("Saved {}, box number {}. Time elapsed {}s. ".format(outfn, len(filtered_box), time() - s))

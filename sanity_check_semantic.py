@@ -1,25 +1,61 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
+"""
+Example: 
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -u sanity_check_semantic.py \
+--dataset_name scannet \
+--nqueries 256 \
+--use_image \
+--ngpus 4 \
+--batchsize_per_gpu 4 \
+--test_only \
+--test_ckpt exp/scannet/openset_traintime_maskclip_alignonly/checkpoint.pth \
+--clip_embed_path /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_scannet.pth \
+MODEL.WEIGHTS /home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth \
+MODEL.CLIP.TEXT_EMB_PATH /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_scannet.pth \
+MODEL.CLIP.OFFLINE_RPN_CONFIG /home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml \
+MODEL.CLIP.TEXT_EMB_DIM 640 \
+MODEL.RESNETS.DEPTH 200 \
+MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
+MODEL.CLIP.CROP_REGION_TYPE GT \
+MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > test_sanity_alignonly.log
+
+CUDA_VISIBLE_DEVICES=3 python -u sanity_check_semantic.py \
+--dataset_name sunrgbd \
+--nqueries 128 \
+--use_image \
+--batchsize_per_gpu 8 \
+--test_only \
+--test_ckpt exp/sunrgbd/openset_main/checkpoint.pth \
+MODEL.WEIGHTS /home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth \
+MODEL.CLIP.TEXT_EMB_PATH /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_sunrgbd.pth \
+MODEL.CLIP.OFFLINE_RPN_CONFIG /home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml \
+MODEL.CLIP.TEXT_EMB_DIM 640 \
+MODEL.RESNETS.DEPTH 200 \
+MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
+MODEL.CLIP.CROP_REGION_TYPE GT \
+MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > test_sanity_alignonly.log
+
+--test_ckpt exp/scannet/openset_baseline/checkpoint.pth \
+--dist_url tcp://localhost:12343 \
+
+"""
+
 import argparse
-import os
-import sys
-import pickle
+import os, sys
 
 import numpy as np
 import torch
 from torch.multiprocessing import set_start_method
 from torch.utils.data import DataLoader, DistributedSampler
-from torch_ema import ExponentialMovingAverage
 
 # 3DETR codebase specific imports
 from datasets import build_dataset
-from engine import evaluate, train_one_epoch
+from engine import inference_prop_feature
 from models import build_model
-from optimizer import build_optimizer
-from criterion import build_criterion
-from utils.dist import init_distributed, is_distributed, is_primary, get_rank, barrier
+from utils.dist import init_distributed, is_distributed, get_rank, is_primary
 from utils.misc import my_worker_init_fn
-from utils.io import save_checkpoint, resume_if_possible
 from utils.logger import Logger
 
 project_name = "OVDet"
@@ -85,27 +121,6 @@ def make_args_parser():
     parser.add_argument("--nqueries", default=256, type=int)
     parser.add_argument("--use_color", default=False, action="store_true")
 
-    ##### Set Loss #####
-    ### Matcher
-    parser.add_argument("--matcher_giou_cost", default=2, type=float)
-    parser.add_argument("--matcher_cls_cost", default=1, type=float)
-    parser.add_argument("--matcher_center_cost", default=0, type=float)
-    parser.add_argument("--matcher_objectness_cost", default=0, type=float)
-
-    ### Loss Weights
-    parser.add_argument("--loss_giou_weight", default=0, type=float)
-    parser.add_argument("--loss_sem_cls_weight", default=0, type=float)
-    parser.add_argument("--loss_obj_weight", default=1, type=float)
-    parser.add_argument(
-        "--loss_no_object_weight", default=0.2, type=float
-    )  # "no object" or "background" class for detection
-    parser.add_argument("--loss_angle_cls_weight", default=0.1, type=float)
-    parser.add_argument("--loss_angle_reg_weight", default=0.5, type=float)
-    parser.add_argument("--loss_center_weight", default=5.0, type=float)
-    parser.add_argument("--loss_size_weight", default=1.0, type=float)
-    parser.add_argument("--loss_2dalignment_weight", default=0.1, type=float)
-    parser.add_argument("--loss_glob_alignment_weight", default=0., type=float)
-
     ##### Dataset #####
     parser.add_argument(
         "--dataset_name", required=True, type=str, choices=["scannet", "sunrgbd"]
@@ -137,6 +152,20 @@ def make_args_parser():
     )
     parser.add_argument(
         "--gss_box_dir",
+        type=str,
+        default=None,
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument(
+        "--in_dir",
+        type=str,
+        default=None,
+        help="Root directory containing the dataset files. \
+              If None, default values from scannet.py/sunrgbd.py are used",
+    )
+    parser.add_argument(
+        "--out_dir",
         type=str,
         default=None,
         help="Root directory containing the dataset files. \
@@ -202,9 +231,9 @@ def make_args_parser():
     )
     parser.add_argument("--use_pbox", default=False, action="store_true")
     parser.add_argument("--use_gss", default=False, action="store_true")
+    parser.add_argument("--glob", default=False, action="store_true")
     parser.add_argument("--use_2d_feature", default=False, action="store_true")
     parser.add_argument("--use_image", default=False, action="store_true")
-    parser.add_argument("--use_pseudo_labels", default=False, action="store_true")
 
     ##### Training #####
     parser.add_argument("--start_epoch", default=-1, type=int)
@@ -215,12 +244,16 @@ def make_args_parser():
     ##### Testing #####
     parser.add_argument("--test_only", default=False, action="store_true")
     parser.add_argument("--test_ckpt", default=None, type=str)
+    parser.add_argument("--topk", default=50, type=int)
+    parser.add_argument("--conf_thresh", default=0, type=float)
+    parser.add_argument("--obj_thresh", default=0, type=float)
 
     ##### I/O #####
     parser.add_argument("--checkpoint_dir", default=None, type=str)
     parser.add_argument("--log_every", default=10, type=int)
     parser.add_argument("--log_metrics_every", default=20, type=int)
     parser.add_argument("--save_separate_checkpoint_every_epoch", default=100, type=int)
+    parser.add_argument("--pseudo_label_saving_path", default=None, type=str)
 
     ##### Distributed Training #####
     parser.add_argument("--ngpus", default=1, type=int)
@@ -228,197 +261,30 @@ def make_args_parser():
 
     return parser
 
-
-def do_train(
-    args,
-    model,
-    regionclip,
-    ema,
-    model_no_ddp,
-    optimizer,
-    criterion,
-    dataset_config,
-    dataloaders,
-    best_val_metrics,
-):
-    """
-    Main training loop.
-    This trains the model for `args.max_epoch` epochs and tests the model after every `args.eval_every_epoch`.
-    We always evaluate the final checkpoint and report both the final AP and best AP on the val set.
-    """
-
-    num_iters_per_epoch = len(dataloaders["train"])
-    num_iters_per_eval_epoch = len(dataloaders["test"])
-    print(f"Model is {model}")
-    print(f"Training started at epoch {args.start_epoch} until {args.max_epoch}.")
-    print(f"One training epoch = {num_iters_per_epoch} iters.")
-    print(f"One eval epoch = {num_iters_per_eval_epoch} iters.")
-
-    final_eval = os.path.join(args.checkpoint_dir, "final_eval.txt")
-    final_eval_pkl = os.path.join(args.checkpoint_dir, "final_eval.pkl")
-
-    if os.path.isfile(final_eval):
-        print(f"Found final eval file {final_eval}. Skipping training.")
-        return
-
-    logger = Logger(args.checkpoint_dir)
-
-    for epoch in range(args.start_epoch, args.max_epoch):
-        print("Epoch {} starts!".format(epoch))
-        if is_distributed():
-            dataloaders["train_sampler"].set_epoch(epoch)
-
-        print("Training starts!")
-        aps = train_one_epoch(
-            args,
-            epoch,
-            model,
-            regionclip,
-            ema, 
-            optimizer,
-            criterion,
-            dataset_config,
-            dataloaders["train"],
-            logger,
-        )
-
-        print("Checkpoint saving!")
-        # latest checkpoint is always stored in checkpoint.pth
-        save_checkpoint(
-            args.checkpoint_dir,
-            model_no_ddp,
-            optimizer,
-            epoch,
-            args,
-            best_val_metrics,
-            filename="checkpoint.pth",
-        )
-
-        print("Metric computing!")
-        metrics = aps.compute_metrics()
-        metric_str = aps.metrics_to_str(metrics, per_class=False)
-        metrics_dict = aps.metrics_to_dict(metrics)
-        curr_iter = epoch * len(dataloaders["train"])
-        if is_primary():
-            print("==" * 10)
-            print(f"Epoch [{epoch}/{args.max_epoch}]; Metrics {metric_str}")
-            print("==" * 10)
-            logger.log_scalars(metrics_dict, curr_iter, prefix="Train/")
-
-        if (
-            epoch > 0
-            and args.save_separate_checkpoint_every_epoch > 0
-            and epoch % args.save_separate_checkpoint_every_epoch == 0
-        ):
-            # separate checkpoints are stored as checkpoint_{epoch}.pth
-            save_checkpoint(
-                args.checkpoint_dir,
-                model_no_ddp,
-                optimizer,
-                epoch,
-                args,
-                best_val_metrics,
-            )
-
-        if epoch % args.eval_every_epoch == 0 or epoch == (args.max_epoch - 1):
-            ap_calculator = evaluate(
-                args,
-                epoch,
-                model,
-                regionclip, 
-                criterion,
-                dataset_config,
-                dataloaders["test"],
-                logger,
-                curr_iter,
-            )
-            metrics = ap_calculator.compute_metrics()
-            ap25 = metrics[0.25]["mAP"]
-            metric_str = ap_calculator.metrics_to_str(metrics, per_class=True)
-            metrics_dict = ap_calculator.metrics_to_dict(metrics)
-            if is_primary():
-                print("==" * 10)
-                print(f"Evaluate Epoch [{epoch}/{args.max_epoch}]; Metrics {metric_str}")
-                print("==" * 10)
-                logger.log_scalars(metrics_dict, curr_iter, prefix="Test/")
-
-            if is_primary() and (
-                len(best_val_metrics) == 0 or best_val_metrics[0.25]["mAP"] < ap25
-            ):
-                best_val_metrics = metrics
-                filename = "checkpoint_best.pth"
-                save_checkpoint(
-                    args.checkpoint_dir,
-                    model_no_ddp,
-                    optimizer,
-                    epoch,
-                    args,
-                    best_val_metrics,
-                    filename=filename,
-                )
-                print(
-                    f"Epoch [{epoch}/{args.max_epoch}] saved current best val checkpoint at {filename}; ap25 {ap25}"
-                )
-        print("Epoch {} ends!".format(epoch))
-
-    # always evaluate last checkpoint
-    epoch = args.max_epoch - 1
-    curr_iter = epoch * len(dataloaders["train"])
-    ap_calculator = evaluate(
-        args,
-        epoch,
-        model,
-        regionclip, 
-        criterion,
-        dataset_config,
-        dataloaders["test"],
-        logger,
-        curr_iter,
-    )
-    metrics = ap_calculator.compute_metrics()
-    metric_str = ap_calculator.metrics_to_str(metrics)
-    if is_primary():
-        print("==" * 10)
-        print(f"Evaluate Final [{epoch}/{args.max_epoch}]; Metrics {metric_str}")
-        print("==" * 10)
-
-        with open(final_eval, "w") as fh:
-            fh.write("Training Finished.\n")
-            fh.write("==" * 10)
-            fh.write("Final Eval Numbers.\n")
-            fh.write(metric_str)
-            fh.write("\n")
-            fh.write("==" * 10)
-            fh.write("Best Eval Numbers.\n")
-            fh.write(ap_calculator.metrics_to_str(best_val_metrics))
-            fh.write("\n")
-
-        with open(final_eval_pkl, "wb") as fh:
-            pickle.dump(metrics, fh)
-
-
-def test_model(args, model, regionclip, model_no_ddp, criterion, dataset_config, dataloaders):
+def test_model(args, model, clip, model_no_ddp, dataset_config, datasets, dataloaders):
+    
     if args.test_ckpt is None or not os.path.isfile(args.test_ckpt):
         f"Please specify a test checkpoint using --test_ckpt. Found invalid value {args.test_ckpt}"
         sys.exit(1)
 
     sd = torch.load(args.test_ckpt, map_location=torch.device("cpu"))
     model_no_ddp.load_state_dict(sd["model"])
+    
     logger = Logger()
-    criterion = None  # do not compute loss for speed-up; Comment out to see test loss
     epoch = -1
     curr_iter = 0
-    ap_calculator = evaluate(
+    ap_calculator = inference_prop_feature(
         args,
         epoch,
         model,
-        regionclip,
-        criterion,
+        clip, 
         dataset_config,
+        datasets["test"],
         dataloaders["test"],
         logger,
         curr_iter,
     )
+    
     metrics = ap_calculator.compute_metrics()
     metric_str = ap_calculator.metrics_to_str(metrics)
     if is_primary():
@@ -460,23 +326,13 @@ def main(local_rank, args):
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[local_rank]
         )
-    criterion = build_criterion(args, dataset_config)
-    criterion = criterion.cuda(local_rank)
 
     dataloaders = {}
-    if args.test_only:
-        dataset_splits = ["test"]
-    else:
-        dataset_splits = ["train", "test"]
+    dataset_splits = ["test"]
     for split in dataset_splits:
-        if split == "train":
-            shuffle = True
-        else:
-            shuffle = False
+        shuffle = False
         if is_distributed():
             sampler = DistributedSampler(datasets[split], shuffle=shuffle)
-        elif shuffle:
-            sampler = torch.utils.data.RandomSampler(datasets[split])
         else:
             sampler = torch.utils.data.SequentialSampler(datasets[split])
 
@@ -486,37 +342,10 @@ def main(local_rank, args):
             batch_size=args.batchsize_per_gpu,
             num_workers=args.dataset_num_workers,
             worker_init_fn=my_worker_init_fn,
-            # drop_last=True
         )
         dataloaders[split + "_sampler"] = sampler
 
-    if args.test_only:
-        criterion = None  # faster evaluation
-        test_model(args, model, regionclip, model_no_ddp, criterion, dataset_config, dataloaders)
-    else:
-        assert (
-            args.checkpoint_dir is not None
-        ), f"Please specify a checkpoint dir using --checkpoint_dir"
-        if is_primary() and not os.path.isdir(args.checkpoint_dir):
-            os.makedirs(args.checkpoint_dir, exist_ok=True)
-        optimizer = build_optimizer(args, model_no_ddp)
-        ema = ExponentialMovingAverage(model.parameters(), decay=0.995)
-        loaded_epoch, best_val_metrics = resume_if_possible(
-            args.checkpoint_dir, model_no_ddp, optimizer
-        )
-        args.start_epoch = loaded_epoch + 1
-        do_train(
-            args,
-            model,
-            regionclip,
-            ema,
-            model_no_ddp,
-            optimizer,
-            criterion,
-            dataset_config,
-            dataloaders,
-            best_val_metrics,
-        )
+    test_model(args, model, regionclip, model_no_ddp, dataset_config, datasets, dataloaders)
 
 
 def launch_distributed(args):

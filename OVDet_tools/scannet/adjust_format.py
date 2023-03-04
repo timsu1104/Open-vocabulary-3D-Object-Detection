@@ -1,18 +1,22 @@
-import os
+import os, sys
 import numpy as np
 import multiprocessing as mp
-from utils.io_utils import get_scene_list, nyu40ids
 from argparse import ArgumentParser
 from functools import partial
-from utils.constants import BOX_ROOT
+
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
+from utils.io_utils import get_scene_list, nyu40ids
+from utils.constants import const_scannet
 
 
 def move(scan_name: str, tag):
-    box = np.load(os.path.join(BOX_ROOT, tag, scan_name+'_bbox.npy'))[:, 0:7] # remove the score and size column
+    box = np.load(os.path.join(const_scannet.box_root, tag, scan_name+'_bbox.npy'))
+    box = box[:, 0:7] # remove the score and size column
     assert box.shape[1] == 7, box.shape
     box[:, -1] = nyu40ids[box[:, -1].astype(np.int64)]
-    os.makedirs(os.path.join(BOX_ROOT, '3DETR_adjusted', tag), exist_ok=True)
-    np.save(os.path.join(BOX_ROOT, '3DETR_adjusted', tag, scan_name+'_bbox.npy'), box)
+    os.makedirs(os.path.join(const_scannet.box_root, '3DETR_adjusted', tag), exist_ok=True)
+    np.save(os.path.join(const_scannet.box_root, '3DETR_adjusted', tag, scan_name+'_bbox.npy'), box)
     return box.shape[0]
 
 if __name__ == '__main__':
