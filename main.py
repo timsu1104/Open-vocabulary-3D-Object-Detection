@@ -486,7 +486,7 @@ def main(local_rank, args):
             batch_size=args.batchsize_per_gpu,
             num_workers=args.dataset_num_workers,
             worker_init_fn=my_worker_init_fn,
-            # drop_last=True
+            drop_last=True
         )
         dataloaders[split + "_sampler"] = sampler
 

@@ -20,15 +20,15 @@ Need help:
 ### Experiments
 
 
-rm exp/sunrgbd/openset_main/*
-CUDA_VISIBLE_DEVICES=2,4,6,7 python -u main.py \
+rm exp/sunrgbd/openset_main_2dmatch_withgss/*
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -u main.py \
 --dataset_name sunrgbd \
 --max_epoch 400 \
 --nqueries 128 \
 --base_lr 7e-4 \
 --ngpus 4 \
---eval_every_epoch 20 \
---batchsize_per_gpu 24 \
+--eval_every_epoch 50 \
+--batchsize_per_gpu 12 \
 --matcher_giou_cost 3 \
 --matcher_cls_cost 1 \
 --matcher_center_cost 5 \
@@ -36,11 +36,14 @@ CUDA_VISIBLE_DEVICES=2,4,6,7 python -u main.py \
 --use_image \
 --loss_giou_weight 0 \
 --loss_no_object_weight 0.1 \
---loss_2dalignment_weight 1e-2 \
+--loss_2dalignment_weight 1 \
+--loss_sem_cls_weight 0 \
 --save_separate_checkpoint_every_epoch -1 \
---checkpoint_dir exp/sunrgbd/openset_main \
+--checkpoint_dir exp/sunrgbd/openset_main_2dmatch_withgss \
 --use_pbox \
 --pseudo_label_dir /share/suzhengyuan/data/RegionCLIP_boxes_sunrgbd/3D_maskclip_nyu38 \
+--use_gss \
+--gss_box_dir /share/suzhengyuan/code/WyPR/gss/computed_proposal_sunrgbd/SZ+V-obb-V+F-obb \
 --use_2d_feature \
 --feature_2d_dir /share/suzhengyuan/data/RegionCLIP_features/gt_sunrgbd_fixed \
 --pseudo_feats_dir /share/suzhengyuan/data/RegionCLIP_features/maskclip_sunrgbd_fixed \
@@ -59,7 +62,7 @@ CUDA_VISIBLE_DEVICES=2 python -u main.py \
 --max_epoch 400 \
 --nqueries 128 \
 --base_lr 7e-4 \
---eval_every_epoch 20 \
+--eval_every_epoch 50 \
 --matcher_giou_cost 3 \
 --matcher_cls_cost 1 \
 --matcher_center_cost 5 \
@@ -87,8 +90,7 @@ MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction
 
 
 
---use_gss \
---gss_box_dir /share/suzhengyuan/code/WyPR/gss/computed_proposal_sunrgbd/SZ+V-obb-V+F-obb \
+
 
 
 
@@ -194,11 +196,59 @@ MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
 MODEL.CLIP.CROP_REGION_TYPE GT \
 MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > log/scannet/openset_main.log
 
-CUDA_VISIBLE_DEVICES=0,3 python -u main.py \
+
+101
+rm exp/scannet/openset_main_withgss/*
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -u main.py \
 --dataset_name scannet \
 --max_epoch 400 \
+--eval_every_epoch 50 \
 --nqueries 256 \
---ngpus 2 \
+--ngpus 4 \
+--dist_url tcp://localhost:12323 \
+--batchsize_per_gpu 12 \
+--matcher_giou_cost 2 \
+--matcher_cls_cost 1 \
+--matcher_center_cost 0 \
+--matcher_objectness_cost 0 \
+--loss_giou_weight 1 \
+--loss_no_object_weight 0.25 \
+--loss_sem_cls_weight 0 \
+--loss_2dalignment_weight 1 \
+--save_separate_checkpoint_every_epoch -1 \
+--checkpoint_dir exp/scannet/openset_main_withgss \
+--use_pbox \
+--pseudo_label_dir /share/suzhengyuan/data/RegionCLIP_boxes/3D_MaskCLIP \
+--use_2d_feature \
+--feature_2d_dir /share/suzhengyuan/data/RegionCLIP_features/scannet_gt \
+--use_gss \
+--gss_box_dir /share/suzhengyuan/code/WyPR/gss/computed_proposal_scannet/SZ+V+maskclip-V+F \
+--pseudo_feats_dir /share/suzhengyuan/data/RegionCLIP_features/maskclip_scannet \
+--gss_feats_dir /share/suzhengyuan/data/RegionCLIP_features/scannet_gss \
+--clip_embed_path /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_scannet.pth \
+MODEL.WEIGHTS /home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth \
+MODEL.CLIP.TEXT_EMB_PATH /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_scannet.pth \
+MODEL.CLIP.OFFLINE_RPN_CONFIG /home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml \
+MODEL.CLIP.TEXT_EMB_DIM 640 \
+MODEL.RESNETS.DEPTH 200 \
+MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
+MODEL.CLIP.CROP_REGION_TYPE GT \
+MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > log/scannet/openset_main_1000.log
+
+
+
+
+
+
+
+
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 python -u main.py \
+--dataset_name matterport \
+--max_epoch 600 \
+--eval_every_epoch 50 \
+--nqueries 256 \
+--ngpus 4 \
 --dist_url tcp://localhost:12323 \
 --batchsize_per_gpu 12 \
 --matcher_giou_cost 2 \
@@ -210,11 +260,13 @@ CUDA_VISIBLE_DEVICES=0,3 python -u main.py \
 --loss_2dalignment_weight 1e-2 \
 --loss_sem_cls_weight 0 \
 --save_separate_checkpoint_every_epoch -1 \
---checkpoint_dir exp/scannet/openset_main_keep1000 \
+--checkpoint_dir exp/scannet/openset_main_1000 \
 --use_pbox \
 --pseudo_label_dir /share/suzhengyuan/data/RegionCLIP_boxes/3D_MaskCLIP \
 --use_2d_feature \
 --feature_2d_dir /share/suzhengyuan/data/RegionCLIP_features/scannet_gt \
+--use_gss \
+--gss_box_dir /share/suzhengyuan/code/WyPR/gss/computed_proposal_scannet/SZ+V+maskclip-V+F \
 --pseudo_feats_dir /share/suzhengyuan/data/RegionCLIP_features/maskclip_scannet \
 --gss_feats_dir /share/suzhengyuan/data/RegionCLIP_features/scannet_gss \
 --clip_embed_path /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_scannet.pth \
@@ -225,14 +277,7 @@ MODEL.CLIP.TEXT_EMB_DIM 640 \
 MODEL.RESNETS.DEPTH 200 \
 MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
 MODEL.CLIP.CROP_REGION_TYPE GT \
-MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > log/scannet/openset_main_keep1000.log
-
-
-
-
---use_gss \
---gss_box_dir /share/suzhengyuan/code/WyPR/gss/computed_proposal_scannet/SZ+V+maskclip-V+F \
-
+MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction
 
 
 

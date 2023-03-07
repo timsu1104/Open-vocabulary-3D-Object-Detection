@@ -23,18 +23,17 @@ from utils.random_cuboid import RandomCuboid
 
 IGNORE_LABEL = -100
 MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
-DATASET_ROOT_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/scannet_detection_data"  ## Replace with path to dataset
-DATASET_METADATA_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/scannet/meta_data" ## Replace with path to dataset
-SCANNET_FRAMES_ROOT = "/data/suzhengyuan/ScanRefer/scannet_train_images/frames_square"
+DATASET_ROOT_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/matterport3d/matterport_detection_data"  ## Replace with path to dataset
+DATASET_METADATA_DIR = "/share/suzhengyuan/code/ScanRefer-3DVG/votenet/matterport3d/meta_data" ## Replace with path to dataset
+SCANNET_FRAMES_ROOT = "/share/suzhengyuan/data/matterport3d/v1/scans"
 SCANNET_FRAMES = os.path.join(SCANNET_FRAMES_ROOT, "{}/{}") # scene_id, mode
 SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAMES, "{}") # name of the file
-SCANNET_META_PATH = os.path.join('/share/suzhengyuan/data/ScanNetv2/scan', '{}', '{}.txt')
-FEATURE_2D_PATH = '/data/suzhengyuan/ScanRefer/LSeg_data'
-PSEUDO_BOX_PATH = "" # "/share/suzhengyuan/data/RegionCLIP_boxes/3DETR_adjusted/3D_GSS_GT_multi_softnms"
+FEATURE_2D_PATH = ''
+PSEUDO_BOX_PATH = ""
 MAX_NUM_PSEUDO_BOX = 1000
 
 
-class ScannetDatasetConfig(object):
+class MatterportDatasetConfig(object):
     def __init__(self):
         self.num_semcls = 18
         self.clip_embed_length = 640
@@ -43,67 +42,95 @@ class ScannetDatasetConfig(object):
         self.max_num_frame = 417
 
         self.type2class = {
-            "cabinet": 0,
-            "bed": 1,
-            "chair": 2,
-            "sofa": 3,
-            "table": 4,
-            "door": 5,
-            "window": 6,
-            "bookshelf": 7,
-            "picture": 8,
-            "counter": 9,
-            "desk": 10,
-            "curtain": 11,
-            "refrigerator": 12,
-            "shower curtain": 13,
-            "toilet": 14,
-            "sink": 15,
-            "bathtub": 16,
-            "other furniture": 17,
+            'chair': 0, 
+            'door': 1, 
+            'table': 2, 
+            'picture': 3, 
+            'cabinet': 4, 
+            'cushion': 5, 
+            'window': 6, 
+            'sofa': 7, 
+            'bed': 8, 
+            'curtain': 9, 
+            'chest_of_drawers': 10, 
+            'plant': 11, 
+            'sink': 12, 
+            'stairs': 13, 
+            'ceiling': 14, 
+            'toilet': 15, 
+            'stool': 16, 
+            'towel': 17, 
+            'mirror': 18, 
+            'tv_monitor': 19, 
+            'shower': 20, 
+            'column': 21, 
+            'bathtub': 22, 
+            'counter': 23, 
+            'fireplace': 24, 
+            'lighting': 25, 
+            'beam': 26, 
+            'railing': 27, 
+            'shelving': 28, 
+            'blinds': 29, 
+            'gym_equipment': 30, 
+            'seating': 31, 
+            'board_panel': 32, 
+            'furniture': 33, 
+            'appliances': 34, 
+            'clothes': 35, 
+            'objects': 36, 
+            'misc': 37
         }
         self.class2type = {self.type2class[t]: t for t in self.type2class}
-        self.nyu40ids = np.array(
-            [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39]
-        )
-        self.nyu40id2class = {
-            nyu40id: i for i, nyu40id in enumerate(list(self.nyu40ids))
-        }
         
-        self.support_class = self.nyu40ids[np.array([9, 10, 11, 12, 13, 14, 15, 16, 17])]
+        self.support_class = np.arange(19)
 
         # Semantic Segmentation Classes. Not used in 3DETR
         self.num_class_semseg = 20
         self.type2class_semseg = {
-            "wall": 0,
-            "floor": 1,
-            "cabinet": 2,
-            "bed": 3,
-            "chair": 4,
-            "sofa": 5,
-            "table": 6,
-            "door": 7,
-            "window": 8,
-            "bookshelf": 9,
-            "picture": 10,
-            "counter": 11,
-            "desk": 12,
-            "curtain": 13,
-            "refrigerator": 14,
-            "shower curtain": 15,
-            "toilet": 16,
-            "sink": 17,
-            "bathtub": 18,
-            "garbagebin": 19,
+            'wall': 0, 
+            'floor': 1, 
+            'chair': 2, 
+            'door': 3, 
+            'table': 4, 
+            'picture': 5, 
+            'cabinet': 6, 
+            'cushion': 7, 
+            'window': 8, 
+            'sofa': 9, 
+            'bed': 10, 
+            'curtain': 11, 
+            'chest_of_drawers': 12, 
+            'plant': 13, 
+            'sink': 14, 
+            'stairs': 15, 
+            'ceiling': 16, 
+            'toilet': 17, 
+            'stool': 18, 
+            'towel': 19, 
+            'mirror': 20, 
+            'tv_monitor': 21, 
+            'shower': 22, 
+            'column': 23, 
+            'bathtub': 24, 
+            'counter': 25, 
+            'fireplace': 26, 
+            'lighting': 27, 
+            'beam': 28, 
+            'railing': 29, 
+            'shelving': 30, 
+            'blinds': 31, 
+            'gym_equipment': 32, 
+            'seating': 33, 
+            'board_panel': 34, 
+            'furniture': 35, 
+            'appliances': 36, 
+            'clothes': 37, 
+            'objects': 38, 
+            'misc': 39
         }
         self.class2type_semseg = {
             self.type2class_semseg[t]: t for t in self.type2class_semseg
-        }
-        self.nyu40ids_semseg = np.array(
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 24, 28, 33, 34, 36, 39]
-        )
-        self.nyu40id2class_semseg = {
-            nyu40id: i for i, nyu40id in enumerate(list(self.nyu40ids_semseg))
         }
 
     def angle2class(self, angle):
@@ -173,7 +200,7 @@ class ScannetDatasetConfig(object):
         return np.concatenate([new_centers, new_lengths], axis=1)
 
 
-class ScannetDetectionDataset(Dataset):
+class MatterportDetectionDataset(Dataset):
     def __init__(
         self,
         dataset_config,
@@ -236,7 +263,7 @@ class ScannetDetectionDataset(Dataset):
         if split_set == "all":
             self.scan_names = all_scan_names
         elif split_set in ["train", "val", "test"]:
-            split_filenames = os.path.join(meta_data_dir, f"scannetv2_{split_set}.txt")
+            split_filenames = os.path.join(meta_data_dir, f"matterport_{split_set}.txt")
             with open(split_filenames, "r") as f:
                 self.scan_names = f.read().splitlines()
             # remove unavailiable scans
@@ -359,7 +386,6 @@ class ScannetDetectionDataset(Dataset):
                 scene_poses[i] = self.img_processor.load_pose(SCANNET_FRAME_PATH.format(scan_name, "pose", "{}.txt".format(frame_id)))
             scene_intrinsics = self.img_processor.load_intrinsic(SCANNET_FRAMES.format(scan_name, 'intrinsic_depth.txt'))
             scene_intrinsics[:2] /= 2
-            scene_axis_align_mat = self.img_processor.read_alignment(SCANNET_META_PATH.format(scan_name, scan_name))
 
         if not self.use_color:
             point_cloud = mesh_vertices[:, 0:3]  # do not use color for now
@@ -472,7 +498,6 @@ class ScannetDetectionDataset(Dataset):
             ret_dict["images"] = scene_images.astype(np.float32)
             ret_dict["poses"] = scene_poses.astype(np.float32)
             ret_dict["intrinsics"] = scene_intrinsics.astype(np.float32)
-            ret_dict["axis_align_mat"] = scene_axis_align_mat.astype(np.float32)
             ret_dict["frame_length"] = np.array(len(frame_list)).astype(np.int64)
         ret_dict["gt_box_corners"] = box_corners.astype(np.float32)
         ret_dict["gt_box_centers"] = box_centers.astype(np.float32)
@@ -483,15 +508,11 @@ class ScannetDetectionDataset(Dataset):
         ret_dict["gt_angle_residual_label"] = angle_residuals.astype(np.float32)
         if not self.only_pbox:
             target_bboxes_semcls = np.zeros((MAX_NUM_OBJ))
-            target_bboxes_semcls[0 : gt_box_num] = [
-                self.dataset_config.nyu40id2class[int(x)]
-                for x in instance_bboxes[:, -1][0 : gt_box_num]
-            ]
+            target_bboxes_semcls[0 : gt_box_num] = instance_bboxes[:gt_box_num, -1]
             ret_dict["gt_box_sem_cls_label"] = target_bboxes_semcls.astype(np.int64)
         
         ret_dict["gt_box_present"] = target_bboxes_mask.astype(np.float32)
         ret_dict["gt_box_all"] = box_mask.astype(np.float32)
-        ret_dict["gt_box_num"] = np.array(gt_box_num).astype(np.int64)
         ret_dict["scan_idx"] = np.array(idx).astype(np.int64)
         ret_dict["pcl_color"] = pcl_color
         if self.use_2d_feature:

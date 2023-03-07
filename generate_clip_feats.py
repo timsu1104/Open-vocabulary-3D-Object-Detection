@@ -2,7 +2,7 @@
 
 """
 Example: 
-CUDA_VISIBLE_DEVICES=3 python generate_clip_feats.py --dataset_name sunrgbd --out_dir /share/suzhengyuan/data/RegionCLIP_features/gt_sunrgbd_fixed --use_image \
+CUDA_VISIBLE_DEVICES=3 python generate_clip_feats.py --dataset_name sunrgbd --out_dir /share/suzhengyuan/data/RegionCLIP_features/gt_sunrgbd_with2d --use_image \
 MODEL.WEIGHTS /home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth \
 MODEL.CLIP.TEXT_EMB_PATH /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_sunrgbd.pth \
 MODEL.CLIP.OFFLINE_RPN_CONFIG /home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml \
@@ -12,7 +12,7 @@ MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
 MODEL.CLIP.CROP_REGION_TYPE GT \
 MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction
 
-CUDA_VISIBLE_DEVICES=2 python generate_clip_feats.py --dataset_name sunrgbd --out_dir /share/suzhengyuan/data/RegionCLIP_features/maskclip_sunrgbd_fixed --use_image \
+CUDA_VISIBLE_DEVICES=3 python generate_clip_feats.py --dataset_name sunrgbd --out_dir /share/suzhengyuan/data/RegionCLIP_features/maskclip_sunrgbd_with2d --use_image \
 --batchsize_per_gpu 16 \
 --use_pbox \
 --pseudo_label_dir /share/suzhengyuan/data/RegionCLIP_boxes_sunrgbd/3D_maskclip_nyu38 \
@@ -25,7 +25,7 @@ MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
 MODEL.CLIP.CROP_REGION_TYPE GT \
 MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction
 
-CUDA_VISIBLE_DEVICES=3 python generate_clip_feats.py --dataset_name sunrgbd --out_dir /share/suzhengyuan/data/RegionCLIP_features/gss_sunrgbd_fixed --use_image \
+CUDA_VISIBLE_DEVICES=2 python generate_clip_feats.py --dataset_name sunrgbd --out_dir /share/suzhengyuan/data/RegionCLIP_features/gss_sunrgbd_with2d --use_image \
 --batchsize_per_gpu 8 \
 --use_pbox \
 --use_gss \

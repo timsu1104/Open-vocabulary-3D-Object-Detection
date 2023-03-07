@@ -369,7 +369,7 @@ def inference_gt_feature(
                 boxes = torch.clamp_min(boxes, 0)
                 boxes = torch.minimum(boxes, max_coords)
                 areas = torch.prod(boxes[..., 2:] - boxes[..., :2], -1)
-                box_mask = areas > 1000 # F, N
+                box_mask = areas > 1000 # N
                 
                 torch.cuda.empty_cache()
                 # print(boxes.shape)
@@ -380,7 +380,7 @@ def inference_gt_feature(
                         'image': frame_image.permute(2, 0, 1).contiguous(),
                         'instances': Instances((frame_image.shape[0], frame_image.shape[1]), gt_boxes=Boxes(boxes[box_mask]))
                     }], do_postprocess=False)
-                batch_clip_logits.append(pl_holder)
+                batch_clip_logits.append(torch.cat([pl_holder, boxes, box_mask.unsqueeze(-1)], -1))
             batch_data_label["batch_clip_logits"] = batch_clip_logits
         else:
             images = batch_data_label["images"] # B, F, (H, W, 3)
@@ -548,26 +548,49 @@ def inference_prop_feature(
                 boxes = torch.clamp_min(boxes, 0)
                 boxes = torch.minimum(boxes, max_coords)
                 areas = torch.prod(boxes[..., 2:] - boxes[..., :2], -1)
-                bmask = (areas > 1000) # F, N
+                bmask = (areas > 100000) # N
                 
-                # visualize
-                from detectron2.utils.visualizer import Visualizer
-                import cv2
-                os.makedirs('visualize', exist_ok=True)
-                print(dataset.scan_names[batch_data_label["scan_idx"][0]])
+                # # visualize
+                # from detectron2.utils.visualizer import Visualizer
+                # import cv2
+                # os.makedirs('visualize', exist_ok=True)
+                # print(dataset.scan_names[batch_data_label["scan_idx"][0]])
+                # if bmask.sum() > 0:
+                #     ret = Instances([h, w])
+                #     ret.pred_boxes = Boxes(boxes[bmask].cpu().numpy())
+                #     # ret.pred_classes = gt_cls[bmask].cpu().numpy()
+                #     vis = Visualizer(image.cpu().numpy(), {"thing_classes": dataset.dataset_config.class2type})
+                #     vis_pred = vis.draw_instance_predictions(ret).get_image()
+                #     cv2.imwrite(os.path.join('visualize', 'sunrgbd.jpg'), vis_pred[:, :, ::-1])
+                # exit(0)
+                
+                results = image.new_zeros(args.nqueries, 640)
+                if bmask.sum() > 0: 
+                    raw_res: torch.Tensor = clip.inference([{
+                        'image': image.clone().permute(2, 0, 1).contiguous(),
+                        'instances': Instances((image.shape[0], image.shape[1]), gt_boxes=Boxes(boxes[bmask]))
+                    }], do_postprocess=False)
+                    results[bmask] = raw_res
+                
+                objectness = image.new_zeros(args.nqueries)
+                if bmask.sum() > 0: 
+                    obj = clip.inference_rpn(image.clone(), boxes[bmask])
+                    if obj is None:
+                        bmask.fill_(False)
+                    else:
+                        objectness[bmask] = obj
+                
                 if bmask.sum() > 0:
-                    ret = Instances([h, w])
-                    ret.pred_boxes = Boxes(boxes[bmask].cpu().numpy())
-                    # ret.pred_classes = gt_cls[bmask].cpu().numpy()
-                    vis = Visualizer(image.cpu().numpy(), {"thing_classes": dataset.dataset_config.class2type})
-                    vis_pred = vis.draw_instance_predictions(ret).get_image()
-                    cv2.imwrite(os.path.join('visualize', 'sunrgbd.jpg'), vis_pred[:, :, ::-1])
-                exit(0)
+                    clip_logits = results # Q, C
+                    obj_prob = objectness# Q
+                    clip_prob = torch.nn.functional.softmax((clip_logits @ text_embedding.transpose(0, 1)), -1)
+                    # if is_primary():
+                    #     print(clip_prob)
+                    # objectness = torch.max(clip_prob, -1)[0]
+                    sem_cls_prob[batch_offset, bmask] = clip_prob[bmask]
+                    objectness_prob[batch_offset, bmask] = obj_prob[bmask]
+                    print(obj_prob)
                 
-                batch_clip_logits.append(clip.inference([{
-                    'image': frame_image.permute(2, 0, 1).contiguous(),
-                    'instances': Instances((frame_image.shape[0], frame_image.shape[1]), gt_boxes=Boxes(boxes))
-                }], do_postprocess=False))
             batch_data_label["batch_clip_logits"] = batch_clip_logits
         else:
             images = batch_data_label["images"] # B, F, (H, W, 3)

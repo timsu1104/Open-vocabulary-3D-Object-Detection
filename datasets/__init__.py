@@ -1,11 +1,13 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 from .scannet import ScannetDetectionDataset, ScannetDatasetConfig
 from .sunrgbd import SunrgbdDetectionDataset, SunrgbdDatasetConfig
+from .matterport3d import MatterportDetectionDataset, MatterportDatasetConfig
 
 
 DATASET_FUNCTIONS = {
     "scannet": [ScannetDetectionDataset, ScannetDatasetConfig],
     "sunrgbd": [SunrgbdDetectionDataset, SunrgbdDatasetConfig],
+    "matterport": [MatterportDetectionDataset, MatterportDatasetConfig],
 }
 
 
@@ -27,7 +29,7 @@ def build_dataset(args):
             meta_data_dir=args.meta_data_dir, 
             use_color=args.use_color,
             use_image=args.use_image,
-            augment=True,
+            augment=False,
             use_pbox=args.use_pbox,
             use_gss=args.use_gss,
             use_2d_feature=args.use_2d_feature

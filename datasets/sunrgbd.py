@@ -554,6 +554,7 @@ class SunrgbdDetectionDataset(Dataset):
             ret_dict["gt_box_sem_cls_label"] = target_bboxes_semcls.astype(np.int64)
         ret_dict["gt_box_present"] = target_bboxes_mask.astype(np.float32)
         ret_dict["gt_box_all"] = box_mask.astype(np.float32)
+        ret_dict["gt_box_num"] = np.array(gt_box_num).astype(np.int64)
         ret_dict["scan_idx"] = np.array(idx).astype(np.int64)
         ret_dict["gt_box_sizes"] = raw_sizes.astype(np.float32)
         ret_dict["gt_box_sizes_normalized"] = box_sizes_normalized.astype(np.float32)

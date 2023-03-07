@@ -27,7 +27,7 @@ CUDA_VISIBLE_DEVICES=3 python -u sanity_check_semantic.py \
 --use_image \
 --batchsize_per_gpu 8 \
 --test_only \
---test_ckpt exp/sunrgbd/openset_main/checkpoint.pth \
+--test_ckpt exp/sunrgbd/openset_main_2dmatch_4gpu/checkpoint.pth \
 MODEL.WEIGHTS /home/zhengyuan/packages/RegionCLIP/pretrained_ckpt/regionclip/regionclip_pretrained-cc_rn50x4.pth \
 MODEL.CLIP.TEXT_EMB_PATH /home/zhengyuan/packages/RegionCLIP/datasets/custom_concepts/concepts_sunrgbd.pth \
 MODEL.CLIP.OFFLINE_RPN_CONFIG /home/zhengyuan/packages/RegionCLIP/configs/LVISv1-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml \
@@ -35,7 +35,7 @@ MODEL.CLIP.TEXT_EMB_DIM 640 \
 MODEL.RESNETS.DEPTH 200 \
 MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION 18 \
 MODEL.CLIP.CROP_REGION_TYPE GT \
-MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > test_sanity_alignonly.log
+MODEL.ROI_HEADS.NAME CLIPRes5ROIHeads_FeatureExtraction > test_sunrgbd_sanity_2d.log
 
 --test_ckpt exp/scannet/openset_baseline/checkpoint.pth \
 --dist_url tcp://localhost:12343 \
